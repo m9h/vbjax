@@ -34,6 +34,17 @@ from .neural_mass import (
     cmc_dfun, cmc_net_dfun, cmc_observe_sp, cmc_observe_dp,
     cmc_hier_dfun, cmc_hier_2node_dfun, cmc_hier_Nnode_dfun,
     cmc_to_layer_activity,
+    CBTheta, CBState, cb_default_theta, cb_default_state,
+    cb_dfun, cb_net_dfun, cb_r_positive,
+    CBEITheta, CBEIState, cbei_default_theta, cbei_default_state,
+    cbei_dfun, cbei_net_dfun, cbei_observe_r, cbei_observe_V,
+    LileyTheta, LileyState, liley_default_theta, liley_default_state,
+    liley_dfun, liley_net_dfun, liley_observe_eeg,
+    LileyPharmaTheta, liley_pharma_default_theta,
+    liley_pharma_propofol_theta, liley_pharma_isoflurane_theta,
+    liley_pharma_dfun, liley_pharma_net_dfun, liley_adhoc,
+    RRWTheta, RRWState, rrw_default_theta, rrw_default_state,
+    rrw_dfun, rrw_net_dfun, rrw_observe_phi,
         )
 from .regmap import make_region_mapping
 from .coupling import (

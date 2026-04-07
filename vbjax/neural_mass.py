@@ -877,6 +877,213 @@ def liley_observe_eeg(ys):
 
 
 # ====================================================================
+# Bojak-Liley pharmacological extension (Bojak & Liley 2005)
+#
+# GABAergic anaesthetics (propofol, isoflurane, etc.) modulate the
+# inhibitory post-synaptic potential by:
+#   1. Scaling peak IPSP amplitude: Gamma_i → Gamma_i * (1 + c_drug * rho_amp)
+#   2. Slowing IPSP decay rate:     gamma_i → gamma_i / (1 + c_drug * rho_rate)
+#
+# Reference:
+#   Bojak I & Liley DTJ (2005) Modeling the effects of anesthesia on
+#       the electroencephalogram. Phys Rev E 71:041902.
+# ====================================================================
+
+LileyPharmaTheta = collections.namedtuple(
+    typename='LileyPharmaTheta',
+    field_names=(
+        'tau_e tau_i '
+        'h_e_rest h_i_rest '
+        'h_ee_eq h_ei_eq h_ie_eq h_ii_eq '
+        'Gamma_e Gamma_i '
+        'gamma_e gamma_i '
+        'N_ee_b N_ei_b N_ie_b N_ii_b '
+        'N_ee_a N_ei_a '
+        'S_e_max S_i_max '
+        'mu_e mu_i '
+        'sigma_e sigma_i '
+        'Lambda v_e '
+        'p_ee p_ei '
+        'c_drug rho_amp rho_rate'
+    ).split())
+
+liley_pharma_default_theta = LileyPharmaTheta(
+    tau_e=94.0,      # excitatory membrane time constant (ms)
+    tau_i=42.0,      # inhibitory membrane time constant (ms)
+    h_e_rest=-70.0,  # excitatory resting potential (mV)
+    h_i_rest=-70.0,  # inhibitory resting potential (mV)
+    h_ee_eq=45.0,    # E→E reversal potential (mV)
+    h_ei_eq=45.0,    # E→I reversal potential (mV)
+    h_ie_eq=-90.0,   # I→E reversal potential (mV)
+    h_ii_eq=-90.0,   # I→I reversal potential (mV)
+    Gamma_e=0.3,     # peak EPSP amplitude (mV)
+    Gamma_i=0.065,   # peak IPSP amplitude (mV)
+    gamma_e=300.0,   # EPSP rate constant (s^-1 → 0.3 ms^-1)
+    gamma_i=65.0,    # IPSP rate constant (s^-1 → 0.065 ms^-1)
+    N_ee_b=3034.0,   # local E→E connections
+    N_ei_b=3034.0,   # local E→I connections
+    N_ie_b=536.0,    # local I→E connections
+    N_ii_b=536.0,    # local I→I connections
+    N_ee_a=4000.0,   # distant E→E connections (long-range)
+    N_ei_a=2000.0,   # distant E→I connections (long-range)
+    S_e_max=0.5,     # max excitatory firing rate (kHz)
+    S_i_max=0.5,     # max inhibitory firing rate (kHz)
+    mu_e=-50.0,      # excitatory sigmoid midpoint (mV)
+    mu_i=-50.0,      # inhibitory sigmoid midpoint (mV)
+    sigma_e=5.0,     # excitatory sigmoid width (mV)
+    sigma_i=5.0,     # inhibitory sigmoid width (mV)
+    Lambda=0.4,      # spatial decay rate (cm^-1)
+    v_e=140.0,       # axonal conduction speed (cm/s)
+    p_ee=1.0,        # external E→E input (kHz)
+    p_ei=1.0,        # external E→I input (kHz)
+    c_drug=0.0,      # dimensionless drug concentration (0=none)
+    rho_amp=0.0,     # amplitude scaling factor
+    rho_rate=0.0,    # rate slowing factor
+)
+
+liley_pharma_propofol_theta = LileyPharmaTheta(
+    tau_e=94.0, tau_i=42.0,
+    h_e_rest=-70.0, h_i_rest=-70.0,
+    h_ee_eq=45.0, h_ei_eq=45.0, h_ie_eq=-90.0, h_ii_eq=-90.0,
+    Gamma_e=0.3, Gamma_i=0.065,
+    gamma_e=300.0, gamma_i=65.0,
+    N_ee_b=3034.0, N_ei_b=3034.0, N_ie_b=536.0, N_ii_b=536.0,
+    N_ee_a=4000.0, N_ei_a=2000.0,
+    S_e_max=0.5, S_i_max=0.5,
+    mu_e=-50.0, mu_i=-50.0,
+    sigma_e=5.0, sigma_i=5.0,
+    Lambda=0.4, v_e=140.0,
+    p_ee=1.0, p_ei=1.0,
+    c_drug=1.0,      # clinical concentration
+    rho_amp=1.5,     # propofol amplitude scaling
+    rho_rate=1.2,    # propofol rate slowing
+)
+
+liley_pharma_isoflurane_theta = LileyPharmaTheta(
+    tau_e=94.0, tau_i=42.0,
+    h_e_rest=-70.0, h_i_rest=-70.0,
+    h_ee_eq=45.0, h_ei_eq=45.0, h_ie_eq=-90.0, h_ii_eq=-90.0,
+    Gamma_e=0.3, Gamma_i=0.065,
+    gamma_e=300.0, gamma_i=65.0,
+    N_ee_b=3034.0, N_ei_b=3034.0, N_ie_b=536.0, N_ii_b=536.0,
+    N_ee_a=4000.0, N_ei_a=2000.0,
+    S_e_max=0.5, S_i_max=0.5,
+    mu_e=-50.0, mu_i=-50.0,
+    sigma_e=5.0, sigma_i=5.0,
+    Lambda=0.4, v_e=140.0,
+    p_ee=1.0, p_ei=1.0,
+    c_drug=1.0,      # clinical concentration
+    rho_amp=1.0,     # isoflurane amplitude scaling
+    rho_rate=0.8,    # isoflurane rate slowing
+)
+
+
+def liley_pharma_dfun(ys, c, p):
+    """Liley mean-field model with Bojak-Liley pharmacological extension (14D).
+
+    GABAergic anaesthetics modulate the inhibitory PSP by scaling the
+    peak amplitude and slowing the decay rate.  When c_drug=0 this
+    reduces exactly to the standard Liley model.
+
+    Parameters
+    ----------
+    ys : array, shape (14,) or (14, n_nodes)
+        State vector (same layout as liley_dfun).
+    c : array
+        External coupling input (adds to phi_ee).
+    p : LileyPharmaTheta
+        Model parameters including c_drug, rho_amp, rho_rate.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+    """
+    (h_e, h_i,
+     I_ee, I_ei, I_ie, I_ii,
+     dI_ee, dI_ei, dI_ie, dI_ii,
+     phi_ee, phi_ei, dphi_ee, dphi_ei) = ys
+
+    # Convert rate constants to ms^-1 for consistent time units
+    ge = p.gamma_e * 1e-3  # s^-1 → ms^-1
+
+    # Drug-modulated inhibitory parameters (Bojak & Liley 2005)
+    Gamma_i_eff = p.Gamma_i * (1.0 + p.c_drug * p.rho_amp)
+    gamma_i_eff = p.gamma_i / (1.0 + p.c_drug * p.rho_rate)
+    gi = gamma_i_eff * 1e-3  # s^-1 → ms^-1
+
+    # Sigmoids (firing rate functions)
+    S_e = p.S_e_max / (1.0 + np.exp(-2.0 * (h_e - p.mu_e) / p.sigma_e))
+    S_i = p.S_i_max / (1.0 + np.exp(-2.0 * (h_i - p.mu_i) / p.sigma_i))
+
+    # Conductance-based (shunting) scaling factors: psi_jk(h_k)
+    psi_ee = (p.h_ee_eq - h_e) / np.abs(p.h_ee_eq - p.h_e_rest)
+    psi_ei = (p.h_ei_eq - h_i) / np.abs(p.h_ei_eq - p.h_i_rest)
+    psi_ie = (p.h_ie_eq - h_e) / np.abs(p.h_ie_eq - p.h_e_rest)
+    psi_ii = (p.h_ii_eq - h_i) / np.abs(p.h_ii_eq - p.h_i_rest)
+
+    # Membrane potential dynamics (conductance-based)
+    dh_e = (1.0 / p.tau_e) * (p.h_e_rest - h_e + psi_ee * I_ee + psi_ie * I_ie)
+    dh_i = (1.0 / p.tau_i) * (p.h_i_rest - h_i + psi_ei * I_ei + psi_ii * I_ii)
+
+    # Axonal propagation rate (spatial decay * velocity)
+    v_Lambda = p.v_e * p.Lambda * 1e-3  # cm/s * cm^-1 → ms^-1
+
+    # Synaptic input dynamics (second-order alpha-function kernels)
+    e_const = np.e  # Euler's number for alpha-function peak normalization
+
+    ddI_ee = -2.0 * ge * dI_ee - ge**2 * I_ee + p.Gamma_e * ge * e_const * (
+        p.N_ee_b * S_e + phi_ee + c + p.p_ee)
+    ddI_ei = -2.0 * ge * dI_ei - ge**2 * I_ei + p.Gamma_e * ge * e_const * (
+        p.N_ei_b * S_e + phi_ei + p.p_ei)
+
+    # Inhibitory kernels use drug-modulated Gamma_i_eff and gi
+    ddI_ie = -2.0 * gi * dI_ie - gi**2 * I_ie + Gamma_i_eff * gi * e_const * (
+        p.N_ie_b * S_i)
+    ddI_ii = -2.0 * gi * dI_ii - gi**2 * I_ii + Gamma_i_eff * gi * e_const * (
+        p.N_ii_b * S_i)
+
+    # Long-range axonal propagation (damped, spatially homogeneous)
+    ddphi_ee = (-2.0 * v_Lambda * dphi_ee - v_Lambda**2 * phi_ee
+                + v_Lambda**2 * p.N_ee_a * S_e)
+    ddphi_ei = (-2.0 * v_Lambda * dphi_ei - v_Lambda**2 * phi_ei
+                + v_Lambda**2 * p.N_ei_a * S_e)
+
+    return np.array([
+        dh_e, dh_i,
+        dI_ee, dI_ei, dI_ie, dI_ii,
+        ddI_ee, ddI_ei, ddI_ie, ddI_ii,
+        dphi_ee, dphi_ei, ddphi_ee, ddphi_ei,
+    ])
+
+
+def liley_pharma_net_dfun(ys, p):
+    """Network form for Liley pharmacological model. Compatible with make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (14, n_nodes)
+    p : tuple (SC, G, node_theta)
+    """
+    SC, G, node_p = p
+    h_e = ys[0]
+    S_e = node_p.S_e_max / (1.0 + np.exp(
+        -2.0 * (h_e - node_p.mu_e) / node_p.sigma_e))
+    c = G * (SC @ S_e)
+    return liley_pharma_dfun(ys, c, node_p)
+
+
+def liley_adhoc(ys, *_):
+    """Clamp Liley membrane potentials to physiological range.
+
+    Use as ``adhoc`` argument in ``make_sde`` to prevent divergence
+    at high pharmacological doses or strong coupling.
+    """
+    h_e = np.clip(ys[0], -90.0, 50.0)
+    h_i = np.clip(ys[1], -90.0, 50.0)
+    return ys.at[0].set(h_e).at[1].set(h_i)
+
+
+# ====================================================================
 # Coombes-Byrne E-I two-population model (8D)
 #
 # Exact mean-field of two interacting QIF populations (E and I) with

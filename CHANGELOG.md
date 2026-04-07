@@ -7,6 +7,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Liley mean-field cortical model** (Liley, Cadusch & Dafilis 2002) --
+  14 state variables with conductance-based (shunting) synapses, alpha-function
+  PSP kernels, and damped-wave long-range axonal propagation.
+  - `liley_dfun`, `liley_net_dfun`, `liley_observe_eeg`.
+  - `LileyTheta`, `LileyState` namedtuples with all 26 parameters from the
+    original publication.
+  - `liley_default_theta` / `liley_default_state`.
+- **Bojak-Liley pharmacological extension** (Bojak & Liley 2005) --
+  drug-dependent modulation of inhibitory PSP kernel parameters for
+  modeling GABAergic anesthetics (propofol, isoflurane, etc.).
+  - `liley_pharma_dfun` with `LileyPharmaTheta`.
+- **Coombes-Byrne next-generation neural mass** (Byrne et al. 2017,
+  Coombes & Byrne 2019) -- exact mean-field of QIF network with
+  alpha-function conductance-based synapses.
+  - Single population (4D): `cb_dfun`, `cb_net_dfun`, `cb_r_positive`.
+  - E-I two-population (8D): `cbei_dfun`, `cbei_net_dfun`.
+- **Robinson-Rennie-Wright corticothalamic model** (Robinson et al. 2002) --
+  4-population (cortical E/I + thalamic relay/reticular) model with
+  corticothalamic loop delay generating alpha rhythm.
+  - `rrw_dfun`, `rrw_net_dfun`, `rrw_observe_phi`.
+- All new models exported from `vbjax.__init__`.
+- Comprehensive test suites for Liley, CB, CBEI, and RRW models.
+
 - **Canonical Microcircuit (CMC) model** -- 4-population neural mass model
   (spiny stellate, superficial pyramidal, inhibitory interneurons, deep
   pyramidal) with 8 state variables and 16 parameters.
