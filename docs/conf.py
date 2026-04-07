@@ -19,7 +19,21 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.mathjax',
     'numpydoc',
-    'sphinx.ext.graphviz'
+    'sphinx.ext.graphviz',
+    'sphinx_autodoc_typehints',
+]
+
+# Mock imports so Sphinx can build docs without installing heavy deps
+autodoc_mock_imports = [
+    'jax',
+    'jaxlib',
+    'numpy',
+    'scipy',
+    'matplotlib',
+    'numpyro',
+    'jax_dataclasses',
+    'tqdm',
+    'joblib',
 ]
 
 source_suffix = '.rst'

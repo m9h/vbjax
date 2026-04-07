@@ -1,4 +1,15 @@
+"""Neural mass models for virtual brain simulations.
+
+Implements several neural mass models commonly used in computational
+neuroscience, including the Jansen-Rit (JR), Montbrio-Pazo-Roxin (MPR),
+Balloon-Windkessel BOLD, DCM, dopamine-modulated QIF, and the Canonical
+Microcircuit (CMC).  All models expose a ``dfun(state, coupling, params)``
+interface compatible with :func:`vbjax.make_sde` and :func:`vbjax.make_ode`.
+"""
+
 import collections
+from typing import Tuple, Union
+
 import jax.numpy as np
 
 
@@ -249,39 +260,106 @@ CMCTheta = collections.namedtuple(
                 'g_ss_sp g_sp_ii g_sp_dp g_dp_ii g_dp_sp '
                 'g_ii_ss g_ii_sp g_ii_dp '
                 'I'.split(' '))
+"""Parameters for the Canonical Microcircuit (CMC) neural mass model.
+
+Fields
+------
+He : float
+    Excitatory post-synaptic potential amplitude (mV).
+Hi : float
+    Inhibitory post-synaptic potential amplitude (mV).
+a : float
+    Excitatory rate constant (ms^-1).
+b : float
+    Inhibitory rate constant (ms^-1).
+r : float
+    Sigmoid steepness (mV^-1).
+v0 : float
+    Sigmoid midpoint (mV).
+nu_max : float
+    Maximum firing rate (kHz).
+g_ss_sp : float
+    Excitatory gain, spiny stellate to superficial pyramidal.
+g_sp_ii : float
+    Excitatory gain, superficial pyramidal to inhibitory interneurons.
+g_sp_dp : float
+    Excitatory gain, superficial pyramidal to deep pyramidal.
+g_dp_ii : float
+    Excitatory gain, deep pyramidal to inhibitory interneurons.
+g_dp_sp : float
+    Excitatory gain, deep pyramidal to superficial pyramidal.
+g_ii_ss : float
+    Inhibitory gain, interneurons to spiny stellate.
+g_ii_sp : float
+    Inhibitory gain, interneurons to superficial pyramidal.
+g_ii_dp : float
+    Inhibitory gain, interneurons to deep pyramidal.
+I : float
+    External (thalamic) drive current.
+
+References
+----------
+Bastos AM et al. (2012) Canonical microcircuits for predictive coding.
+    Neuron 76(4):695-711.
+"""
 
 cmc_default_theta = CMCTheta(
     He=3.25,        # excitatory PSP amplitude (mV), same as JR A
     Hi=22.0,        # inhibitory PSP amplitude (mV), same as JR B
-    a=0.1,          # excitatory rate constant (ms⁻¹), same as JR a
-    b=0.05,         # inhibitory rate constant (ms⁻¹), same as JR b
-    r=0.56,         # sigmoid steepness (mV⁻¹)
+    a=0.1,          # excitatory rate constant (ms^-1), same as JR a
+    b=0.05,         # inhibitory rate constant (ms^-1), same as JR b
+    r=0.56,         # sigmoid steepness (mV^-1)
     v0=6.0,         # sigmoid midpoint (mV)
     nu_max=0.0025,  # max firing rate (kHz)
     # excitatory intrinsic connections (tuned via DE for alpha oscillations)
-    g_ss_sp=86.3,   # ss → sp, feedforward
-    g_sp_ii=23.8,   # sp → ii
-    g_sp_dp=188.0,  # sp → dp, descending
-    g_dp_ii=68.1,   # dp → ii
-    g_dp_sp=125.1,  # dp → sp, ascending feedback
+    g_ss_sp=86.3,   # ss -> sp, feedforward
+    g_sp_ii=23.8,   # sp -> ii
+    g_sp_dp=188.0,  # sp -> dp, descending
+    g_dp_ii=68.1,   # dp -> ii
+    g_dp_sp=125.1,  # dp -> sp, ascending feedback
     # inhibitory intrinsic connections
-    g_ii_ss=120.3,  # ii → ss
-    g_ii_sp=101.4,  # ii → sp
-    g_ii_dp=158.5,  # ii → dp
+    g_ii_ss=120.3,  # ii -> ss
+    g_ii_sp=101.4,  # ii -> sp
+    g_ii_dp=158.5,  # ii -> dp
     # external drive
     I=362.5,
 )
+"""Default CMC parameters tuned via differential evolution for alpha
+oscillations.  Connectivity gains were optimized to produce a spectral
+peak in the 8--13 Hz (alpha) band with stable bounded dynamics.  See
+``examples/cmc_tune_defaults.py`` for the optimization procedure.
+"""
 
 CMCState = collections.namedtuple(
     typename='CMCState',
     field_names='x_ss x_sp x_ii x_dp v_ss v_sp v_ii v_dp'.split(' '))
+"""State vector for the CMC neural mass model.
+
+The 8 state variables arise from a 2nd-order ODE per population,
+converted to a 1st-order system: ``[x, v]`` where ``x`` is the mean
+membrane potential and ``v = dx/dt``.
+
+Fields
+------
+x_ss : float
+    Mean membrane potential of spiny stellate cells (layer IV).
+x_sp : float
+    Mean membrane potential of superficial pyramidal cells (layers II/III).
+x_ii : float
+    Mean membrane potential of inhibitory interneurons.
+x_dp : float
+    Mean membrane potential of deep pyramidal cells (layers V/VI).
+v_ss, v_sp, v_ii, v_dp : float
+    Corresponding time derivatives (velocities).
+"""
 
 cmc_default_state = CMCState(
     x_ss=0.0, x_sp=0.0, x_ii=0.0, x_dp=0.0,
     v_ss=0.0, v_sp=0.0, v_ii=0.0, v_dp=0.0)
+"""Default initial state for the CMC model (all zeros / resting)."""
 
 
-def cmc_dfun(ys, c, p):
+def cmc_dfun(ys, c, p: CMCTheta) -> np.ndarray:
     """Canonical microcircuit dynamics (Bastos et al. 2012).
 
     Parameters
@@ -331,7 +409,7 @@ def cmc_dfun(ys, c, p):
     ])
 
 
-def cmc_net_dfun(ys, p):
+def cmc_net_dfun(ys, p: Tuple) -> np.ndarray:
     """Network form: computes linear coupling from superficial pyramidal
     activity and calls cmc_dfun.  Compatible with vbjax.make_sde.
 
@@ -354,7 +432,7 @@ def cmc_net_dfun(ys, p):
     return cmc_dfun(ys, c, node_p)
 
 
-def cmc_hier_dfun(ys, c_fwd, c_bwd, p):
+def cmc_hier_dfun(ys, c_fwd, c_bwd, p: CMCTheta) -> np.ndarray:
     """CMC with separate forward and backward inter-regional coupling.
 
     Implements the hierarchical predictive coding architecture of
@@ -406,7 +484,7 @@ def cmc_hier_dfun(ys, c_fwd, c_bwd, p):
     ])
 
 
-def cmc_hier_2node_dfun(ys, p):
+def cmc_hier_2node_dfun(ys, p: Tuple) -> np.ndarray:
     """Two-node hierarchical CMC for predictive coding experiments.
 
     Node 0 = lower area (e.g. V1), Node 1 = higher area (e.g. V4).
@@ -439,7 +517,7 @@ def cmc_hier_2node_dfun(ys, p):
     return cmc_hier_dfun(ys, c_fwd, c_bwd, node_p)
 
 
-def cmc_hier_Nnode_dfun(ys, p):
+def cmc_hier_Nnode_dfun(ys, p: Tuple) -> np.ndarray:
     """N-node hierarchical CMC with forward/backward connectivity.
 
     Generalizes the 2-node case to arbitrary hierarchies defined
@@ -473,7 +551,7 @@ def cmc_hier_Nnode_dfun(ys, p):
     return cmc_hier_dfun(ys, c_fwd, c_bwd, node_p)
 
 
-def cmc_to_layer_activity(ys):
+def cmc_to_layer_activity(ys) -> np.ndarray:
     """Map CMC state to 3-layer cortical activity for vpjax coupling.
 
     Provides principled per-layer neural activity, replacing the
@@ -504,7 +582,7 @@ def cmc_to_layer_activity(ys):
         return np.stack([x_dp, x_ss, x_sp], axis=-1)
 
 
-def cmc_observe_sp(ys):
+def cmc_observe_sp(ys) -> np.ndarray:
     """Return superficial pyramidal membrane potential (EEG/MEG-like).
 
     In predictive coding, superficial pyramidal cells encode prediction
@@ -514,10 +592,562 @@ def cmc_observe_sp(ys):
     return ys[1]
 
 
-def cmc_observe_dp(ys):
+def cmc_observe_dp(ys) -> np.ndarray:
     """Return deep pyramidal membrane potential (LFP/feedback-like).
 
     Deep pyramidal cells encode predictions and project to subcortical
     structures and lower cortical areas.
     """
     return ys[3]
+
+
+# ====================================================================
+# Coombes-Byrne single population (Byrne et al. 2017, Coombes & Byrne 2019)
+#
+# Exact mean-field reduction of a QIF neuron network with
+# alpha-function conductance-based synapses and Lorentzian
+# heterogeneity.
+#
+# 4 state variables:
+#   r  - mean firing rate
+#   V  - mean membrane potential
+#   g  - synaptic conductance (alpha-function kernel)
+#   z  - auxiliary variable for 2nd-order conductance dynamics
+#
+# Equations (Coombes & Byrne 2019, Eq. 7-10):
+#   tau_m * dr/dt = Delta/pi + 2*r*V
+#   tau_m * dV/dt = V^2 + eta + kappa_s*g*(V_syn - V) - (pi*tau_m*r)^2
+#   tau_s * dg/dt = z
+#   tau_s * dz/dt = r - 2*z - g
+#
+# References:
+#   Byrne A, Avitabile D, Coombes S (2017) Next generation neural mass
+#       models. Lecture Notes in Nonlinear Dynamics, Springer.
+#   Coombes S & Byrne A (2019) Next-generation neural mass and field
+#       modeling. J Neurophysiol 122:1275-1287.
+#   Cakir Y et al. (2023) Comparison between an exact and a heuristic
+#       neural mass model. Biol Cybern 117:79-98.
+# ====================================================================
+
+CBTheta = collections.namedtuple(
+    typename='CBTheta',
+    field_names='tau_m Delta eta tau_s V_syn kappa_s I'.split(' '))
+
+cb_default_theta = CBTheta(
+    tau_m=10.0,     # membrane time constant (ms)
+    Delta=1.0,      # heterogeneity width (Lorentzian half-width, mV)
+    eta=-5.0,       # mean external current (mV^2/ms), center of Lorentzian
+    tau_s=5.0,      # synaptic time constant (ms), alpha-function
+    V_syn=0.0,      # synaptic reversal potential (mV), 0 for excitatory
+    kappa_s=1.0,    # synaptic coupling strength (dimensionless)
+    I=0.0,          # external drive (mV^2/ms)
+)
+
+CBState = collections.namedtuple(
+    typename='CBState',
+    field_names='r V g z'.split(' '))
+
+cb_default_state = CBState(r=0.01, V=-2.0, g=0.0, z=0.0)
+
+
+def cb_dfun(ys, c, p):
+    """Coombes-Byrne next-generation neural mass (4D).
+
+    Parameters
+    ----------
+    ys : array, shape (4,) or (4, n_nodes)
+        State vector [r, V, g, z].
+    c : array
+        External coupling input (enters V equation additively).
+    p : CBTheta
+        Model parameters.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+    """
+    r, V, g, z = ys
+    r = r * (r > 0)
+
+    pi_tau_r = np.pi * p.tau_m * r
+
+    dr = (1.0 / p.tau_m) * (p.Delta / np.pi + 2.0 * r * V)
+    dV = (1.0 / p.tau_m) * (V ** 2 + p.eta + p.I + c
+                             + p.kappa_s * g * (p.V_syn - V)
+                             - pi_tau_r ** 2)
+    dg = z / p.tau_s
+    dz = (1.0 / p.tau_s) * (r - 2.0 * z - g)
+
+    return np.array([dr, dV, dg, dz])
+
+
+def cb_net_dfun(ys, p):
+    """Network form for Coombes-Byrne model. Compatible with make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (4, n_nodes)
+    p : tuple (SC, G, node_theta)
+    """
+    SC, G, node_p = p
+    r = ys[0]
+    c = G * (SC @ r)
+    return cb_dfun(ys, c, node_p)
+
+
+def cb_r_positive(y, _):
+    """Enforce non-negative firing rate."""
+    return y.at[0].set(np.where(y[0] < 0, 0, y[0]))
+
+
+# ====================================================================
+# Liley mean-field model (Liley, Cadusch & Dafilis 2002)
+#
+# Spatially homogeneous (neural mass) form of the Liley continuum
+# model of electrocortical activity.
+#
+# 2 populations: Excitatory (e) and Inhibitory (i)
+# Conductance-based synapses with reversal potentials.
+#
+# 14 first-order ODEs (from 2 membrane + 4 second-order synaptic
+# + 2 second-order long-range axonal equations):
+#
+# Key feature: the conductance-based (shunting) synapse
+#   psi_jk(h_k) = (h_j^eq - h_k) / |h_j^eq - h_k^rest|
+#
+# References:
+#   Liley DTJ, Cadusch PJ, Dafilis MP (2002) A spatially continuous
+#       mean field theory of electrocortical activity. Network 13:67-113.
+#   Bojak I & Liley DTJ (2005) Modeling the effects of anesthesia on
+#       the electroencephalogram. Phys Rev E 71:041902.
+# ====================================================================
+
+LileyTheta = collections.namedtuple(
+    typename='LileyTheta',
+    field_names=(
+        'tau_e tau_i '
+        'h_e_rest h_i_rest '
+        'h_ee_eq h_ei_eq h_ie_eq h_ii_eq '
+        'Gamma_e Gamma_i '
+        'gamma_e gamma_i '
+        'N_ee_b N_ei_b N_ie_b N_ii_b '
+        'N_ee_a N_ei_a '
+        'S_e_max S_i_max '
+        'mu_e mu_i '
+        'sigma_e sigma_i '
+        'Lambda v_e '
+        'p_ee p_ei '
+    ).split())
+
+liley_default_theta = LileyTheta(
+    tau_e=94.0,      # excitatory membrane time constant (ms)
+    tau_i=42.0,      # inhibitory membrane time constant (ms)
+    h_e_rest=-70.0,  # excitatory resting potential (mV)
+    h_i_rest=-70.0,  # inhibitory resting potential (mV)
+    h_ee_eq=45.0,    # E→E reversal potential (mV)
+    h_ei_eq=45.0,    # E→I reversal potential (mV)
+    h_ie_eq=-90.0,   # I→E reversal potential (mV)
+    h_ii_eq=-90.0,   # I→I reversal potential (mV)
+    Gamma_e=0.3,     # peak EPSP amplitude (mV)
+    Gamma_i=0.065,   # peak IPSP amplitude (mV)
+    gamma_e=300.0,   # EPSP rate constant (s^-1 → 0.3 ms^-1)
+    gamma_i=65.0,    # IPSP rate constant (s^-1 → 0.065 ms^-1)
+    N_ee_b=3034.0,   # local E→E connections
+    N_ei_b=3034.0,   # local E→I connections
+    N_ie_b=536.0,    # local I→E connections
+    N_ii_b=536.0,    # local I→I connections
+    N_ee_a=4000.0,   # distant E→E connections (long-range)
+    N_ei_a=2000.0,   # distant E→I connections (long-range)
+    S_e_max=0.5,     # max excitatory firing rate (kHz)
+    S_i_max=0.5,     # max inhibitory firing rate (kHz)
+    mu_e=-50.0,      # excitatory sigmoid midpoint (mV)
+    mu_i=-50.0,      # inhibitory sigmoid midpoint (mV)
+    sigma_e=5.0,     # excitatory sigmoid width (mV)
+    sigma_i=5.0,     # inhibitory sigmoid width (mV)
+    Lambda=0.4,      # spatial decay rate (cm^-1)
+    v_e=140.0,       # axonal conduction speed (cm/s)
+    p_ee=1.0,        # external E→E input (kHz)
+    p_ei=1.0,        # external E→I input (kHz)
+)
+
+LileyState = collections.namedtuple(
+    typename='LileyState',
+    field_names=(
+        'h_e h_i '
+        'I_ee I_ei I_ie I_ii '
+        'dI_ee dI_ei dI_ie dI_ii '
+        'phi_ee phi_ei dphi_ee dphi_ei'
+    ).split())
+
+liley_default_state = LileyState(
+    h_e=-70.0, h_i=-70.0,
+    I_ee=0.0, I_ei=0.0, I_ie=0.0, I_ii=0.0,
+    dI_ee=0.0, dI_ei=0.0, dI_ie=0.0, dI_ii=0.0,
+    phi_ee=0.0, phi_ei=0.0, dphi_ee=0.0, dphi_ei=0.0,
+)
+
+
+def liley_dfun(ys, c, p):
+    """Liley mean-field cortical model (14D).
+
+    Parameters
+    ----------
+    ys : array, shape (14,) or (14, n_nodes)
+        State vector.
+    c : array
+        External coupling input (adds to phi_ee).
+    p : LileyTheta
+        Model parameters.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+    """
+    (h_e, h_i,
+     I_ee, I_ei, I_ie, I_ii,
+     dI_ee, dI_ei, dI_ie, dI_ii,
+     phi_ee, phi_ei, dphi_ee, dphi_ei) = ys
+
+    # Convert rate constants to ms^-1 for consistent time units
+    ge = p.gamma_e * 1e-3  # s^-1 → ms^-1
+    gi = p.gamma_i * 1e-3
+
+    # Sigmoids (firing rate functions)
+    S_e = p.S_e_max / (1.0 + np.exp(-2.0 * (h_e - p.mu_e) / p.sigma_e))
+    S_i = p.S_i_max / (1.0 + np.exp(-2.0 * (h_i - p.mu_i) / p.sigma_i))
+
+    # Conductance-based (shunting) scaling factors: psi_jk(h_k)
+    psi_ee = (p.h_ee_eq - h_e) / np.abs(p.h_ee_eq - p.h_e_rest)
+    psi_ei = (p.h_ei_eq - h_i) / np.abs(p.h_ei_eq - p.h_i_rest)
+    psi_ie = (p.h_ie_eq - h_e) / np.abs(p.h_ie_eq - p.h_e_rest)
+    psi_ii = (p.h_ii_eq - h_i) / np.abs(p.h_ii_eq - p.h_i_rest)
+
+    # Membrane potential dynamics (conductance-based)
+    dh_e = (1.0 / p.tau_e) * (p.h_e_rest - h_e + psi_ee * I_ee + psi_ie * I_ie)
+    dh_i = (1.0 / p.tau_i) * (p.h_i_rest - h_i + psi_ei * I_ei + psi_ii * I_ii)
+
+    # Axonal propagation rate (spatial decay * velocity)
+    v_Lambda = p.v_e * p.Lambda * 1e-3  # cm/s * cm^-1 → ms^-1
+
+    # Synaptic input dynamics (second-order alpha-function kernels)
+    e_const = np.e  # Euler's number for alpha-function peak normalization
+
+    ddI_ee = -2.0 * ge * dI_ee - ge**2 * I_ee + p.Gamma_e * ge * e_const * (
+        p.N_ee_b * S_e + phi_ee + c + p.p_ee)
+    ddI_ei = -2.0 * ge * dI_ei - ge**2 * I_ei + p.Gamma_e * ge * e_const * (
+        p.N_ei_b * S_e + phi_ei + p.p_ei)
+    ddI_ie = -2.0 * gi * dI_ie - gi**2 * I_ie + p.Gamma_i * gi * e_const * (
+        p.N_ie_b * S_i)
+    ddI_ii = -2.0 * gi * dI_ii - gi**2 * I_ii + p.Gamma_i * gi * e_const * (
+        p.N_ii_b * S_i)
+
+    # Long-range axonal propagation (damped, spatially homogeneous)
+    ddphi_ee = (-2.0 * v_Lambda * dphi_ee - v_Lambda**2 * phi_ee
+                + v_Lambda**2 * p.N_ee_a * S_e)
+    ddphi_ei = (-2.0 * v_Lambda * dphi_ei - v_Lambda**2 * phi_ei
+                + v_Lambda**2 * p.N_ei_a * S_e)
+
+    return np.array([
+        dh_e, dh_i,
+        dI_ee, dI_ei, dI_ie, dI_ii,
+        ddI_ee, ddI_ei, ddI_ie, ddI_ii,
+        dphi_ee, dphi_ei, ddphi_ee, ddphi_ei,
+    ])
+
+
+def liley_net_dfun(ys, p):
+    """Network form for Liley model. Compatible with make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (14, n_nodes)
+    p : tuple (SC, G, node_theta)
+    """
+    SC, G, node_p = p
+    h_e = ys[0]
+    S_e = node_p.S_e_max / (1.0 + np.exp(
+        -2.0 * (h_e - node_p.mu_e) / node_p.sigma_e))
+    c = G * (SC @ S_e)
+    return liley_dfun(ys, c, node_p)
+
+
+def liley_observe_eeg(ys):
+    """Return h_e (excitatory membrane potential, EEG-like observable)."""
+    return ys[0]
+
+
+# ====================================================================
+# Coombes-Byrne E-I two-population model (8D)
+#
+# Exact mean-field of two interacting QIF populations (E and I) with
+# alpha-function conductance-based synapses.
+#
+# 8 state variables:
+#   r_e, V_e, g_e, z_e  - excitatory population
+#   r_i, V_i, g_i, z_i  - inhibitory population
+#
+# References:
+#   Coombes S & Byrne A (2019) Next-generation neural mass and field
+#       modeling. J Neurophysiol 122:1275-1287.
+# ====================================================================
+
+CBEITheta = collections.namedtuple(
+    typename='CBEITheta',
+    field_names=(
+        'tau_m_e tau_m_i Delta_e Delta_i eta_e eta_i '
+        'tau_s_e tau_s_i '
+        'V_syn_e V_syn_i '
+        'kappa_ee kappa_ei kappa_ie kappa_ii '
+        'I'
+    ).split())
+
+cbei_default_theta = CBEITheta(
+    tau_m_e=10.0,    # E membrane time constant (ms)
+    tau_m_i=10.0,    # I membrane time constant (ms)
+    Delta_e=1.0,     # E heterogeneity width (mV)
+    Delta_i=1.0,     # I heterogeneity width (mV)
+    eta_e=-5.0,      # E mean drive (mV^2/ms)
+    eta_i=-5.0,      # I mean drive (mV^2/ms)
+    tau_s_e=5.0,     # E synaptic time constant (ms)
+    tau_s_i=5.0,     # I synaptic time constant (ms)
+    V_syn_e=0.0,     # excitatory reversal potential (mV)
+    V_syn_i=-80.0,   # inhibitory reversal potential (mV)
+    kappa_ee=10.0,   # E→E coupling strength
+    kappa_ei=10.0,   # E→I coupling strength
+    kappa_ie=10.0,   # I→E coupling strength
+    kappa_ii=5.0,    # I→I coupling strength
+    I=0.0,           # external drive to E (mV^2/ms)
+)
+
+CBEIState = collections.namedtuple(
+    typename='CBEIState',
+    field_names='r_e V_e g_e z_e r_i V_i g_i z_i'.split(' '))
+
+cbei_default_state = CBEIState(
+    r_e=0.01, V_e=-2.0, g_e=0.0, z_e=0.0,
+    r_i=0.01, V_i=-2.0, g_i=0.0, z_i=0.0,
+)
+
+
+def cbei_dfun(ys, c, p):
+    """Coombes-Byrne E-I next-generation neural mass (8D).
+
+    Parameters
+    ----------
+    ys : array, shape (8,) or (8, n_nodes)
+        State vector [r_e, V_e, g_e, z_e, r_i, V_i, g_i, z_i].
+    c : array
+        External coupling input (enters V_e additively).
+    p : CBEITheta
+        Model parameters.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+    """
+    r_e, V_e, g_e, z_e, r_i, V_i, g_i, z_i = ys
+    r_e = r_e * (r_e > 0)
+    r_i = r_i * (r_i > 0)
+
+    pi_tau_e_r = np.pi * p.tau_m_e * r_e
+    pi_tau_i_r = np.pi * p.tau_m_i * r_i
+
+    # Excitatory population
+    dr_e = (1.0 / p.tau_m_e) * (p.Delta_e / np.pi + 2.0 * r_e * V_e)
+    dV_e = (1.0 / p.tau_m_e) * (
+        V_e ** 2 + p.eta_e + p.I + c
+        + p.kappa_ee * g_e * (p.V_syn_e - V_e)
+        + p.kappa_ie * g_i * (p.V_syn_i - V_e)
+        - pi_tau_e_r ** 2)
+    dg_e = z_e / p.tau_s_e
+    dz_e = (1.0 / p.tau_s_e) * (r_e - 2.0 * z_e - g_e)
+
+    # Inhibitory population
+    dr_i = (1.0 / p.tau_m_i) * (p.Delta_i / np.pi + 2.0 * r_i * V_i)
+    dV_i = (1.0 / p.tau_m_i) * (
+        V_i ** 2 + p.eta_i
+        + p.kappa_ei * g_e * (p.V_syn_e - V_i)
+        + p.kappa_ii * g_i * (p.V_syn_i - V_i)
+        - pi_tau_i_r ** 2)
+    dg_i = z_i / p.tau_s_i
+    dz_i = (1.0 / p.tau_s_i) * (r_i - 2.0 * z_i - g_i)
+
+    return np.array([dr_e, dV_e, dg_e, dz_e, dr_i, dV_i, dg_i, dz_i])
+
+
+def cbei_net_dfun(ys, p):
+    """Network form for Coombes-Byrne E-I model. Compatible with make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (8, n_nodes)
+    p : tuple (SC, G, node_theta)
+    """
+    SC, G, node_p = p
+    r_e = ys[0]
+    c = G * (SC @ r_e)
+    return cbei_dfun(ys, c, node_p)
+
+
+def cbei_observe_r(ys):
+    """Return excitatory firing rate."""
+    return ys[0]
+
+
+def cbei_observe_V(ys):
+    """Return excitatory mean membrane potential."""
+    return ys[1]
+
+
+# ====================================================================
+# Robinson-Rennie-Wright corticothalamic model (Robinson et al. 2002)
+#
+# 4 populations: cortical excitatory (e), cortical inhibitory (i),
+# thalamic relay (s), thalamic reticular nucleus (r).
+#
+# Alpha from corticothalamic loop delay (~85 ms round-trip → ~12 Hz).
+#
+# 8 first-order ODEs (spatially homogeneous):
+#   phi_e, dphi_e  - cortical excitatory axonal field + derivative
+#   V_e, V_i       - cortical soma potentials
+#   V_s, V_r       - thalamic soma potentials
+#   dV_s, dV_r     - auxiliary for 2nd-order thalamic synaptic filter
+#
+# References:
+#   Robinson PA, Rennie CJ, Wright JJ (2002) Prediction of EEG
+#       spectra from neurophysiology. Phys Rev E 65:041924.
+# ====================================================================
+
+RRWTheta = collections.namedtuple(
+    typename='RRWTheta',
+    field_names=(
+        'Q_max theta sigma_prime '
+        'gamma_e '
+        'alpha beta '
+        'nu_ee nu_ei nu_es '
+        'nu_se nu_sr nu_sn '
+        'nu_re nu_rs '
+        't0 '
+        'I'
+    ).split())
+
+rrw_default_theta = RRWTheta(
+    Q_max=250.0,      # maximum firing rate (s^-1)
+    theta=15.0,        # sigmoid threshold (mV)
+    sigma_prime=3.3,   # sigmoid width (mV)
+    gamma_e=100.0,     # cortical damping rate (s^-1)
+    alpha=50.0,        # synaptic rise rate (s^-1)
+    beta=200.0,        # synaptic decay rate (s^-1)
+    nu_ee=1.0,         # E→E cortical (mV*ms)
+    nu_ei=-1.8,        # I→E cortical (mV*ms, negative)
+    nu_es=1.0,         # relay→E cortical (mV*ms)
+    nu_se=1.2,         # E→relay (mV*ms)
+    nu_sr=-0.8,        # reticular→relay (mV*ms, negative)
+    nu_sn=1.0,         # external→relay (mV*ms)
+    nu_re=0.4,         # E→reticular (mV*ms)
+    nu_rs=0.2,         # relay→reticular (mV*ms)
+    t0=85.0,           # round-trip corticothalamic delay (ms)
+    I=0.0,             # external stimulus (kHz)
+)
+
+RRWState = collections.namedtuple(
+    typename='RRWState',
+    field_names='phi_e dphi_e V_e V_i V_s V_r dV_s dV_r'.split(' '))
+
+rrw_default_state = RRWState(
+    phi_e=5.0, dphi_e=0.0,
+    V_e=0.0, V_i=0.0,
+    V_s=0.0, V_r=0.0,
+    dV_s=0.0, dV_r=0.0,
+)
+
+
+def rrw_dfun(ys, c, p):
+    """Robinson-Rennie-Wright corticothalamic model (8D).
+
+    Spatially homogeneous form (no wave equation spatial terms).
+
+    Parameters
+    ----------
+    ys : array, shape (8,) or (8, n_nodes)
+        State vector [phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r].
+    c : array
+        External coupling input (enters relay neuron).
+    p : RRWTheta
+        Model parameters.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+    """
+    phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r = ys
+
+    # Convert rates to ms^-1
+    ge = p.gamma_e * 1e-3
+    al = p.alpha * 1e-3
+    be = p.beta * 1e-3
+    Q_max_ms = p.Q_max * 1e-3
+
+    # Sigmoid firing rate function
+    def S(V):
+        return Q_max_ms / (1.0 + np.exp(-(V - p.theta) / p.sigma_prime))
+
+    Q_e = S(V_e)
+    Q_i = S(V_i)
+    Q_s = S(V_s)
+    Q_r = S(V_r)
+
+    # Cortical axonal field (damped, spatially homogeneous)
+    ddphi_e = ge**2 * (Q_e - phi_e) - 2.0 * ge * dphi_e
+
+    # Approximate delayed cortical output for corticothalamic loop.
+    # In the full model, phi_e(t - t0/2) is used. For the ODE form
+    # without delay line, we use phi_e directly.
+    phi_e_delayed = phi_e
+
+    # Cortical excitatory soma (second-order synaptic filter)
+    drive_e = p.nu_ee * phi_e + p.nu_ei * Q_i + p.nu_es * Q_s
+    dV_e_dt = (al * be * drive_e - (al + be) * V_e) * 0.5
+
+    # Cortical inhibitory soma (same cortical inputs)
+    drive_i = p.nu_ee * phi_e + p.nu_ei * Q_i + p.nu_es * Q_s
+    dV_i_dt = (al * be * drive_i - (al + be) * V_i) * 0.5
+
+    # Thalamic relay soma (full 2nd-order filter)
+    drive_s = (p.nu_se * phi_e_delayed + p.nu_sr * Q_r
+               + p.nu_sn * (p.I + c))
+    ddV_s = al * be * drive_s - (al + be) * dV_s - al * be * V_s
+
+    # Thalamic reticular nucleus
+    drive_r = p.nu_re * phi_e_delayed + p.nu_rs * Q_s
+    ddV_r = al * be * drive_r - (al + be) * dV_r - al * be * V_r
+
+    return np.array([
+        dphi_e,
+        ddphi_e,
+        dV_e_dt,
+        dV_i_dt,
+        dV_s,
+        dV_r,
+        ddV_s,
+        ddV_r,
+    ])
+
+
+def rrw_net_dfun(ys, p):
+    """Network form for RRW model. Compatible with make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (8, n_nodes)
+    p : tuple (SC, G, node_theta)
+    """
+    SC, G, node_p = p
+    phi_e = ys[0]
+    c = G * (SC @ phi_e)
+    return rrw_dfun(ys, c, node_p)
+
+
+def rrw_observe_phi(ys):
+    """Return cortical excitatory field phi_e (EEG-like observable)."""
+    return ys[0]

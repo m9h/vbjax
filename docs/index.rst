@@ -83,6 +83,17 @@ Tutorial
 
    tutorial
 
+CMC Tutorials
+#############
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Canonical Microcircuit:
+
+   tutorials/cmc_model
+   tutorials/hierarchical_predictive_coding
+   tutorials/model_comparison
+
 Indices and tables
 ==================
 
