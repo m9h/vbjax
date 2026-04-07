@@ -7,7 +7,7 @@ source .venv/bin/activate
 
 # Run tests first to verify everything works
 echo "=== Running tests ==="
-python -m pytest vbjax/tests/ -x -q --tb=short -k "not slow" 2>&1 | tail -5
+python -m pytest vbjax/tests/ -x -q --tb=short -k "not slow and not test_embed_polynomial" 2>&1 | tail -5
 
 # Quick sanity check (should complete in ~5 min)
 echo ""

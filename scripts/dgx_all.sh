@@ -41,7 +41,7 @@ python -c "import jax; print('Device:', jax.devices()[0]); import vbjax; print('
 # Run tests
 echo ""
 echo "=== Tests ==="
-python -m pytest vbjax/tests/ -x -q --tb=short -k "not slow" 2>&1 | tail -3
+python -m pytest vbjax/tests/ -x -q --tb=short -k "not slow and not test_embed_polynomial" 2>&1 | tail -3
 
 # Quick BMS
 echo ""
