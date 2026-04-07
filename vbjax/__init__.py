@@ -30,6 +30,10 @@ from .neural_mass import (
     BVEPTheta, bvep_default_theta, bvep_dfun, DCMTheta, dcm_dfun,
     DopaTheta, dopa_dfun, dopa_default_theta, dopa_default_initial_state,
     dopa_net_dfun, dopa_r_positive, dopa_gfun_add, dopa_gfun_mulr,
+    CMCTheta, CMCState, cmc_default_theta, cmc_default_state,
+    cmc_dfun, cmc_net_dfun, cmc_observe_sp, cmc_observe_dp,
+    cmc_hier_dfun, cmc_hier_2node_dfun, cmc_hier_Nnode_dfun,
+    cmc_to_layer_activity,
         )
 from .regmap import make_region_mapping
 from .coupling import (

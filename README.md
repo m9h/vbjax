@@ -316,12 +316,59 @@ This is a pretty simple example but it's meant to show that any model
 you build with vbjax like this is usable with optimization or NumPyro's
 MCMC algorithms.
 
+### Canonical Microcircuit (CMC)
+
+The CMC model (Bastos et al. 2012, Douglas 2025) implements a 4-population
+laminar cortical circuit with 8 state variables:
+
+```python
+import vbjax as vb
+
+# Single node with external drive
+p = vb.cmc_default_theta._replace(I=250.0)
+_, loop = vb.make_sde(dt=0.5, dfun=lambda y, p: vb.cmc_dfun(y, 0.0, p), gfun=1e-3)
+ys = loop(vb.np.zeros(8), vb.randn(4000, 8), p)
+
+# Separate EEG-like and LFP-like outputs
+sp = vb.cmc_observe_sp(ys.T)  # superficial pyramidal (prediction errors)
+dp = vb.cmc_observe_dp(ys.T)  # deep pyramidal (predictions)
+```
+
+Hierarchical predictive coding with forward/backward coupling:
+```python
+# 2-node hierarchy: lower area → higher area
+G_fwd, G_bwd = 80.0, 80.0
+p = (G_fwd, G_bwd, vb.cmc_default_theta._replace(I=220.0))
+_, loop = vb.make_sde(dt=0.5, dfun=vb.cmc_hier_2node_dfun, gfun=1e-3)
+ys = loop(vb.np.zeros((8, 2)), vb.randn(4000, 8, 2), p)
+```
+
+Layer-resolved BOLD via vpjax bridge:
+```python
+# Map CMC populations to cortical layers for vpjax hemodynamics
+layers = vb.cmc_to_layer_activity(ys[-1])  # (n_nodes, 3): deep, middle, superficial
+```
+
+**Available models:** JR (6D), MPR (2D), BVEP (2D), CMC (8D), Dopa (6D), DCM, BOLD
+
+Run `python examples/cmc_comparison.py` for a full comparison across models covering
+spectral fingerprints, bifurcation, laminar decomposition, forward/backward asymmetry,
+cross-frequency coupling, and 2-node hierarchical predictive coding.
+
+| Model | States | Populations | Unique capability |
+|-------|--------|-------------|-------------------|
+| CMC   | 8      | ss, sp, ii, dp | Laminar decomposition, fwd/bwd asymmetry |
+| JR    | 6      | pyr, ei, ii    | Established workhorse, well-characterized |
+| MPR   | 2      | r, V           | Exact mean-field of QIF, analytical |
+| Dopa  | 6      | r, V, u, Sa, Sg, Dp | Dopamine modulation, 3-channel coupling |
+
 ### ƪ(ړײ)‎ƪ​​ moar examples‽
 
 More complex examples are in the [examples](examples) folder:
 
 - high resolution connectome neural field simulation & inference
 - parameter sweep example
+- CMC comparison analysis (`cmc_comparison.py`)
 - *more examples  cooking* 🍩
 
 ## HPC usage

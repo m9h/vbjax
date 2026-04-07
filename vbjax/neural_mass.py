@@ -203,3 +203,321 @@ def dopa_gfun_mulr(y, p):
 def dopa_gfun_add(y, p):
     "Provides an additive noise gfun."
     return p.sigma
+
+
+# Canonical Microcircuit (Bastos et al. 2012, Douglas 2025)
+#
+# 4 populations arranged by cortical layer:
+#   ss  - spiny stellate cells        (granular, layer IV)
+#   sp  - superficial pyramidal cells (supragranular, layers II/III)
+#   ii  - inhibitory interneurons     (all layers)
+#   dp  - deep pyramidal cells        (infragranular, layers V/VI)
+#
+# 8 state variables (2nd-order ODE per population → 1st-order system):
+#   [x_ss, x_sp, x_ii, x_dp, v_ss, v_sp, v_ii, v_dp]
+#   where x = mean membrane potential, v = dx/dt
+#
+# Intrinsic connectivity (Bastos et al. 2012, Fig. 3):
+#   ss → sp  (excitatory feedforward)
+#   sp → ii  (excitatory, drives inhibition)
+#   sp → dp  (excitatory, descending)
+#   dp → ii  (excitatory, drives inhibition)
+#   dp → sp  (excitatory, ascending feedback)
+#   ii → ss  (inhibitory)
+#   ii → sp  (inhibitory)
+#   ii → dp  (inhibitory)
+#
+# Inter-regional coupling enters via:
+#   Forward:  ss (granular layer, thalamic/feedforward target)
+#   Backward: sp + dp (supragranular + infragranular targets)
+#
+# Each excitatory population (ss, sp, dp) uses the excitatory PSP kernel
+# (He, a), and the inhibitory population (ii) uses the inhibitory kernel
+# (Hi, b).  Same sigmoid as Jansen-Rit for direct comparability.
+#
+# References:
+#   Bastos AM et al. (2012) Canonical microcircuits for predictive coding.
+#       Neuron 76(4):695-711.
+#   Douglas PK (2025) Computing with canonical microcircuits.
+#       arXiv:2508.06501.
+#   Moran RJ et al. (2013) Neural masses and fields in dynamic causal
+#       modeling. Frontiers in Computational Neuroscience 7:57.
+
+CMCTheta = collections.namedtuple(
+    typename='CMCTheta',
+    field_names='He Hi a b r v0 nu_max '
+                'g_ss_sp g_sp_ii g_sp_dp g_dp_ii g_dp_sp '
+                'g_ii_ss g_ii_sp g_ii_dp '
+                'I'.split(' '))
+
+cmc_default_theta = CMCTheta(
+    He=3.25,        # excitatory PSP amplitude (mV), same as JR A
+    Hi=22.0,        # inhibitory PSP amplitude (mV), same as JR B
+    a=0.1,          # excitatory rate constant (ms⁻¹), same as JR a
+    b=0.05,         # inhibitory rate constant (ms⁻¹), same as JR b
+    r=0.56,         # sigmoid steepness (mV⁻¹)
+    v0=6.0,         # sigmoid midpoint (mV)
+    nu_max=0.0025,  # max firing rate (kHz)
+    # excitatory intrinsic connections (tuned via DE for alpha oscillations)
+    g_ss_sp=86.3,   # ss → sp, feedforward
+    g_sp_ii=23.8,   # sp → ii
+    g_sp_dp=188.0,  # sp → dp, descending
+    g_dp_ii=68.1,   # dp → ii
+    g_dp_sp=125.1,  # dp → sp, ascending feedback
+    # inhibitory intrinsic connections
+    g_ii_ss=120.3,  # ii → ss
+    g_ii_sp=101.4,  # ii → sp
+    g_ii_dp=158.5,  # ii → dp
+    # external drive
+    I=362.5,
+)
+
+CMCState = collections.namedtuple(
+    typename='CMCState',
+    field_names='x_ss x_sp x_ii x_dp v_ss v_sp v_ii v_dp'.split(' '))
+
+cmc_default_state = CMCState(
+    x_ss=0.0, x_sp=0.0, x_ii=0.0, x_dp=0.0,
+    v_ss=0.0, v_sp=0.0, v_ii=0.0, v_dp=0.0)
+
+
+def cmc_dfun(ys, c, p):
+    """Canonical microcircuit dynamics (Bastos et al. 2012).
+
+    Parameters
+    ----------
+    ys : array, shape (8,) or (8, n_nodes)
+        State vector [x_ss, x_sp, x_ii, x_dp, v_ss, v_sp, v_ii, v_dp].
+    c : array
+        Coupling input (enters spiny stellate / granular layer).
+    p : CMCTheta
+        Model parameters.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+        State derivatives.
+    """
+    x_ss, x_sp, x_ii, x_dp, v_ss, v_sp, v_ii, v_dp = ys
+
+    # Sigmoid (identical to Jansen-Rit for direct comparison)
+    sigm = lambda x: 2.0 * p.nu_max / (1.0 + np.exp(p.r * (p.v0 - x)))
+
+    s_ss = sigm(x_ss)
+    s_sp = sigm(x_sp)
+    s_ii = sigm(x_ii)
+    s_dp = sigm(x_dp)
+
+    # Synaptic input currents per population
+    I_ss = -p.g_ii_ss * s_ii + c + p.I
+    I_sp = p.g_ss_sp * s_ss - p.g_ii_sp * s_ii + p.g_dp_sp * s_dp
+    I_ii = p.g_sp_ii * s_sp + p.g_dp_ii * s_dp
+    I_dp = p.g_sp_dp * s_sp - p.g_ii_dp * s_ii
+
+    a2 = p.a ** 2
+    b2 = p.b ** 2
+
+    # 2nd-order PSP kernels as 1st-order system:
+    #   dv/dt = H*κ*I - 2κ*v - κ²*x    (damped harmonic oscillator)
+    return np.array([
+        v_ss,
+        v_sp,
+        v_ii,
+        v_dp,
+        p.He * p.a * I_ss - 2.0 * p.a * v_ss - a2 * x_ss,
+        p.He * p.a * I_sp - 2.0 * p.a * v_sp - a2 * x_sp,
+        p.Hi * p.b * I_ii - 2.0 * p.b * v_ii - b2 * x_ii,
+        p.He * p.a * I_dp - 2.0 * p.a * v_dp - a2 * x_dp,
+    ])
+
+
+def cmc_net_dfun(ys, p):
+    """Network form: computes linear coupling from superficial pyramidal
+    activity and calls cmc_dfun.  Compatible with vbjax.make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (8, n_nodes)
+        State matrix.
+    p : tuple (SC, G, node_theta)
+        SC : (n, n) structural connectivity matrix
+        G  : float, global coupling strength
+        node_theta : CMCTheta, per-node parameters
+
+    Returns
+    -------
+    dys : array, shape (8, n_nodes)
+    """
+    SC, G, node_p = p
+    x_sp = ys[1]  # superficial pyramidal = long-range output
+    c = G * (SC @ x_sp)
+    return cmc_dfun(ys, c, node_p)
+
+
+def cmc_hier_dfun(ys, c_fwd, c_bwd, p):
+    """CMC with separate forward and backward inter-regional coupling.
+
+    Implements the hierarchical predictive coding architecture of
+    Bastos et al. (2012):
+    - Forward connections target ss (granular layer IV)
+    - Backward connections target sp + dp (agranular layers)
+
+    Parameters
+    ----------
+    ys : array, shape (8,) or (8, n_nodes)
+        State vector.
+    c_fwd : array
+        Forward coupling input (enters ss / granular layer).
+    c_bwd : array
+        Backward coupling input (enters sp + dp / agranular layers).
+    p : CMCTheta
+        Model parameters.
+
+    Returns
+    -------
+    dys : array, same shape as ys
+    """
+    x_ss, x_sp, x_ii, x_dp, v_ss, v_sp, v_ii, v_dp = ys
+
+    sigm = lambda x: 2.0 * p.nu_max / (1.0 + np.exp(p.r * (p.v0 - x)))
+
+    s_ss = sigm(x_ss)
+    s_sp = sigm(x_sp)
+    s_ii = sigm(x_ii)
+    s_dp = sigm(x_dp)
+
+    I_ss = -p.g_ii_ss * s_ii + c_fwd + p.I
+    I_sp = p.g_ss_sp * s_ss - p.g_ii_sp * s_ii + p.g_dp_sp * s_dp + c_bwd
+    I_ii = p.g_sp_ii * s_sp + p.g_dp_ii * s_dp
+    I_dp = p.g_sp_dp * s_sp - p.g_ii_dp * s_ii + c_bwd
+
+    a2 = p.a ** 2
+    b2 = p.b ** 2
+
+    return np.array([
+        v_ss,
+        v_sp,
+        v_ii,
+        v_dp,
+        p.He * p.a * I_ss - 2.0 * p.a * v_ss - a2 * x_ss,
+        p.He * p.a * I_sp - 2.0 * p.a * v_sp - a2 * x_sp,
+        p.Hi * p.b * I_ii - 2.0 * p.b * v_ii - b2 * x_ii,
+        p.He * p.a * I_dp - 2.0 * p.a * v_dp - a2 * x_dp,
+    ])
+
+
+def cmc_hier_2node_dfun(ys, p):
+    """Two-node hierarchical CMC for predictive coding experiments.
+
+    Node 0 = lower area (e.g. V1), Node 1 = higher area (e.g. V4).
+    Forward: sp of lower → ss of higher (prediction errors ascend).
+    Backward: dp of higher → sp+dp of lower (predictions descend).
+
+    Compatible with vbjax.make_sde: signature is dfun(state, params).
+
+    Parameters
+    ----------
+    ys : array, shape (8, 2)
+        Column 0 = lower node, column 1 = higher node.
+    p : tuple (G_fwd, G_bwd, node_theta)
+        G_fwd : float, forward coupling gain
+        G_bwd : float, backward coupling gain
+        node_theta : CMCTheta, intrinsic parameters (shared)
+
+    Returns
+    -------
+    dys : array, shape (8, 2)
+    """
+    G_fwd, G_bwd, node_p = p
+
+    sp_lower = ys[1, 0]
+    dp_higher = ys[3, 1]
+
+    c_fwd = np.array([0.0, G_fwd * sp_lower])
+    c_bwd = np.array([G_bwd * dp_higher, 0.0])
+
+    return cmc_hier_dfun(ys, c_fwd, c_bwd, node_p)
+
+
+def cmc_hier_Nnode_dfun(ys, p):
+    """N-node hierarchical CMC with forward/backward connectivity.
+
+    Generalizes the 2-node case to arbitrary hierarchies defined
+    by separate forward and backward structural connectivity matrices.
+
+    Compatible with vbjax.make_sde.
+
+    Parameters
+    ----------
+    ys : array, shape (8, n_nodes)
+        State matrix.
+    p : tuple (SC_fwd, SC_bwd, G_fwd, G_bwd, node_theta)
+        SC_fwd : (n, n) forward connectivity (source sp → target ss)
+        SC_bwd : (n, n) backward connectivity (source dp → target sp+dp)
+        G_fwd  : float, forward coupling gain
+        G_bwd  : float, backward coupling gain
+        node_theta : CMCTheta
+
+    Returns
+    -------
+    dys : array, shape (8, n_nodes)
+    """
+    SC_fwd, SC_bwd, G_fwd, G_bwd, node_p = p
+
+    x_sp = ys[1]  # forward source: superficial pyramidal
+    x_dp = ys[3]  # backward source: deep pyramidal
+
+    c_fwd = G_fwd * (SC_fwd @ x_sp)
+    c_bwd = G_bwd * (SC_bwd @ x_dp)
+
+    return cmc_hier_dfun(ys, c_fwd, c_bwd, node_p)
+
+
+def cmc_to_layer_activity(ys):
+    """Map CMC state to 3-layer cortical activity for vpjax coupling.
+
+    Provides principled per-layer neural activity, replacing the
+    heuristic feedforward/feedback fractions in vpjax.layer_stimulus().
+    Feed directly into per-layer Balloon-Windkessel models.
+
+    Mapping (matches vpjax.LayerNVCParams layer ordering):
+        Layer 0 (deep, V-VI)         ← x_dp (deep pyramidal)
+        Layer 1 (middle, IV)         ← x_ss (spiny stellate)
+        Layer 2 (superficial, I-III) ← x_sp (superficial pyramidal)
+
+    Parameters
+    ----------
+    ys : array, shape (8,) or (8, n_nodes)
+        CMC state vector.
+
+    Returns
+    -------
+    layer_activity : array, shape (3,) or (n_nodes, 3)
+        Per-layer neural activity for vpjax hemodynamic models.
+    """
+    x_ss = ys[0]
+    x_sp = ys[1]
+    x_dp = ys[3]
+    if ys.ndim == 1:
+        return np.array([x_dp, x_ss, x_sp])
+    else:
+        return np.stack([x_dp, x_ss, x_sp], axis=-1)
+
+
+def cmc_observe_sp(ys):
+    """Return superficial pyramidal membrane potential (EEG/MEG-like).
+
+    In predictive coding, superficial pyramidal cells encode prediction
+    errors and are the primary generators of EEG/MEG signals measured at
+    the scalp.
+    """
+    return ys[1]
+
+
+def cmc_observe_dp(ys):
+    """Return deep pyramidal membrane potential (LFP/feedback-like).
+
+    Deep pyramidal cells encode predictions and project to subcortical
+    structures and lower cortical areas.
+    """
+    return ys[3]
