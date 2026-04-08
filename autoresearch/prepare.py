@@ -27,7 +27,7 @@ from vbjax.bms import bms_ffx
 # ---------------------------------------------------------------------------
 
 RESULTS_FILE = Path(__file__).parent / "results.tsv"
-TIMEOUT_SECONDS = 300  # 5 min max
+TIMEOUT_SECONDS = 600  # 10 min max
 
 # Simulation defaults (RTX 2080 feasible)
 DEFAULT_DT_S = 0.5e-3       # 0.5 ms -> 2 kHz

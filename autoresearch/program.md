@@ -68,7 +68,7 @@ all 4 models after fitting to synthetic Liley-generated EEG. Lower loss
 
 ## Constraints
 
-- Experiment must complete in < 5 minutes on RTX 2080 (8GB)
+- Experiment must complete in < 10 minutes on RTX 2080 (8GB)
 - Use BIC free energy approximation (no Hessian — too slow on this GPU)
 - DO NOT modify prepare.py
 - Each experiment should fit all 4 models to 2 synthetic subjects minimum
