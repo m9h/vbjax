@@ -1,0 +1,131 @@
+- name: "Multi-start optimization"
+  category: optimization
+  description: "Run fitting from multiple random initial theta values and keep the best."
+  applicable_when: "Optimizer gets stuck at identical parameters across subjects"
+  code_pattern: |
+    import jax.numpy as jnp
+    best_result = None
+    for init_seed in range(5):
+        theta_init = jax.random.normal(jax.random.PRNGKey(init_seed), (k,)) * 0.5
+        result = fit_model(name, params, target, theta_init=theta_init)
+        if best_result is None or result.spectral_loss < best_result.spectral_loss:
+            best_result = result
+  tags: [optimization, multi-start, initialization]
+
+- name: "Cosine learning rate schedule"
+  category: optimization
+  description: "Use cosine annealing to decay learning rate, avoiding overshoot at convergence."
+  applicable_when: "Loss oscillates or doesn't converge smoothly"
+  code_pattern: |
+    result = fit_model(name, params, target, lr=0.05, lr_schedule="cosine", n_opt_steps=200)
+  tags: [optimization, lr-schedule, cosine]
+
+- name: "Warmup learning rate schedule"
+  category: optimization
+  description: "Linearly ramp up learning rate to avoid early divergence."
+  applicable_when: "Training diverges in early steps"
+  code_pattern: |
+    result = fit_model(name, params, target, lr=0.03, lr_schedule="warmup", n_opt_steps=150)
+  tags: [optimization, lr-schedule, warmup]
+
+- name: "Higher learning rate with strong gradient clipping"
+  category: optimization
+  description: "Use aggressive lr with tight clipping to escape flat regions."
+  applicable_when: "Parameters don't move from initialization"
+  code_pattern: |
+    result = fit_model(name, params, target, lr=0.1, grad_clip=5.0, n_opt_steps=150)
+  tags: [optimization, lr, gradient-clipping]
+
+- name: "Expand free parameter set"
+  category: parameter-selection
+  description: "Include more free parameters to improve spectral fit at the cost of complexity."
+  applicable_when: "All models produce similar poor fits with too few parameters"
+  code_pattern: |
+    models = [
+        {'name': 'liley', 'free_params': ['p_ee', 'sigma_e', 'Gamma_e', 'gamma_i']},
+        {'name': 'cmc',   'free_params': ['I', 'g_ss_sp', 'He', 'Hi']},
+        {'name': 'rrw',   'free_params': ['I', 'nu_ee', 'nu_es', 'gamma_e']},
+        {'name': 'cbei',  'free_params': ['I', 'kappa_ee', 'kappa_ie', 'tau_s_e']},
+    ]
+  tags: [parameter-selection, model-complexity]
+
+- name: "Minimal free parameter set"
+  category: parameter-selection
+  description: "Use only 1 free parameter per model (input drive) for clean comparison."
+  applicable_when: "Overfitting with too many params — all models fit equally well"
+  code_pattern: |
+    models = [
+        {'name': 'liley', 'free_params': ['p_ee']},
+        {'name': 'cmc',   'free_params': ['I']},
+        {'name': 'rrw',   'free_params': ['I']},
+        {'name': 'cbei',  'free_params': ['I']},
+    ]
+  tags: [parameter-selection, parsimony]
+
+- name: "Model-specific noise tuning"
+  category: simulation
+  description: "Each model may need different diffusion coefficient for realistic dynamics."
+  applicable_when: "Some models produce flat spectra or diverge"
+  code_pattern: |
+    noise_map = {'liley': 0.5e-3, 'cmc': 1e-3, 'rrw': 0.1e-3, 'cbei': 0.01e-3}
+    for mcfg in models:
+        result = fit_model(mcfg['name'], mcfg['free_params'], target,
+                          noise_sigma=noise_map[mcfg['name']])
+  tags: [simulation, noise, per-model]
+
+- name: "Longer simulation for better spectral resolution"
+  category: simulation
+  description: "Increase n_steps to get more frequency bins and smoother PSD."
+  applicable_when: "PSD has too few bins or is noisy"
+  code_pattern: |
+    result = fit_model(name, params, target, n_steps=20_000, n_warmup=4_000)
+  tags: [simulation, resolution, spectral]
+
+- name: "Tighter prior for regularization"
+  category: fitting
+  description: "Reduce prior_std to penalize large parameter deviations more strongly."
+  applicable_when: "Fitted parameters are unrealistically far from defaults"
+  code_pattern: |
+    result = fit_model(name, params, target, prior_std=0.5)
+  tags: [fitting, regularization, prior]
+
+- name: "Loose prior for exploration"
+  category: fitting
+  description: "Increase prior_std to allow the optimizer more freedom."
+  applicable_when: "Good loss reduction stops early due to prior penalty"
+  code_pattern: |
+    result = fit_model(name, params, target, prior_std=3.0)
+  tags: [fitting, regularization, prior]
+
+- name: "Two-phase optimization"
+  category: optimization
+  description: "First phase: high lr, few steps. Second phase: low lr, more steps."
+  applicable_when: "Single lr can't balance exploration and refinement"
+  code_pattern: |
+    # Phase 1: coarse
+    r1 = fit_model(name, params, target, lr=0.05, n_opt_steps=50, grad_clip=5.0)
+    # Phase 2: refine from phase 1 result
+    r2 = fit_model(name, params, target, lr=0.005, n_opt_steps=100,
+                   theta_init=jnp.array(r1.theta_map))
+  tags: [optimization, two-phase, warm-restart]
+
+- name: "Sensitivity-guided parameter selection"
+  category: parameter-selection
+  description: "Choose free parameters with largest gradient magnitude at default values."
+  applicable_when: "Unsure which parameters to free"
+  code_pattern: |
+    # Test all candidate params individually
+    candidates = ['p_ee', 'sigma_e', 'Gamma_e', 'tau_e', 'gamma_i']
+    for p in candidates:
+        r = fit_model('liley', [p], target, n_opt_steps=20)
+        print(f"  {p}: loss={r.spectral_loss:.2f}, theta={r.theta_map}")
+  tags: [parameter-selection, sensitivity, gradient]
+
+- name: "Subject-specific noise seeds"
+  category: fitting
+  description: "Use different noise realizations per subject to test robustness."
+  applicable_when: "Identical results across subjects suggests frozen noise is dominant"
+  code_pattern: |
+    for i in range(n_subjects):
+        result = fit_model(name, params, target_psds[i], noise_seed=42 + i * 100)
+  tags: [fitting, noise, reproducibility]
