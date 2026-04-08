@@ -121,7 +121,7 @@ def make_cbei_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
 
 def fit_to_spectrum(sde_loop, n_states, target_indices, target_psd,
                     dt_s, n_steps, n_warmup, nperseg, k,
-                    noise_key, n_opt_steps=200, lr=0.05):
+                    noise_key, n_opt_steps=200, lr=0.05, use_bic=False):
     """Fit a model to a single observed PSD. Returns (F, loss, theta)."""
     fs = 1.0 / dt_s
     zs = jax.random.normal(noise_key, (n_steps, n_states))
@@ -161,15 +161,20 @@ def fit_to_spectrum(sde_loop, n_states, target_indices, target_psd,
 
     final_nlj = float(neg_log_joint(theta))
 
-    # Laplace free energy
-    try:
-        H = jax.hessian(neg_log_joint)(theta)
-        sign, logdet = jnp.linalg.slogdet(H)
-        F = -final_nlj + 0.5 * k * float(jnp.log(2 * jnp.pi)) - 0.5 * float(logdet)
-        if int(sign) <= 0:
+    if use_bic:
+        # BIC approximation: F ≈ -NLJ - (k/2)*log(n_data)
+        n_data = len(target_indices)
+        F = -final_nlj - 0.5 * k * np.log(n_data)
+    else:
+        # Exact Laplace free energy
+        try:
+            H = jax.hessian(neg_log_joint)(theta)
+            sign, logdet = jnp.linalg.slogdet(H)
+            F = -final_nlj + 0.5 * k * float(jnp.log(2 * jnp.pi)) - 0.5 * float(logdet)
+            if int(sign) <= 0:
+                F = -1e10
+        except Exception:
             F = -1e10
-    except Exception:
-        F = -1e10
 
     return F, final_nlj, theta
 
@@ -183,6 +188,8 @@ def main():
     parser.add_argument('--alpha-blocking', action='store_true')
     parser.add_argument('--n-subjects', type=int, default=82)
     parser.add_argument('--quick', action='store_true')
+    parser.add_argument('--bic', action='store_true',
+                        help='Use BIC approximation instead of exact Hessian')
     parser.add_argument('--output', type=str, default='results/realdata')
     args = parser.parse_args()
 
@@ -257,7 +264,8 @@ def main():
                 F, loss, theta = fit_to_spectrum(
                     sde_loop, n_states, target_indices, target_psd_i,
                     dt_s, n_steps, n_warmup, nperseg, k, noise_key,
-                    n_opt_steps=n_opt_steps, lr=0.05)
+                    n_opt_steps=n_opt_steps, lr=0.05,
+                    use_bic=args.bic)
 
                 free_energies[i, j] = F
 
