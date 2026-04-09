@@ -1358,3 +1358,281 @@ def rrw_net_dfun(ys, p):
 def rrw_observe_phi(ys):
     """Return cortical excitatory field phi_e (EEG-like observable)."""
     return ys[0]
+
+
+# ====================================================================
+# RRW with corticothalamic delay (SDDE form)
+#
+# The critical feature of the RRW model is the corticothalamic loop
+# delay t0 (~85 ms round-trip).  phi_e reaches the thalamus at
+# t - t0/2.  Without this delay the model cannot generate alpha.
+#
+# SDDE dfun signature: dfun(buf, x, t, p)
+#   buf : history buffer, shape (buf_len, n_states)
+#   x   : current state, shape (n_states,)
+#   t   : current time index into buf
+#   p   : parameters
+# ====================================================================
+
+def rrw_delay_steps(dt, t0=85.0):
+    """Compute delay in time steps for the half round-trip.
+
+    Parameters
+    ----------
+    dt : float
+        Integration time step (ms).
+    t0 : float
+        Full round-trip corticothalamic delay (ms). Default 85 ms.
+
+    Returns
+    -------
+    delay_steps : int
+        Number of time steps for t0/2.
+    """
+    return int(np.floor(t0 / 2.0 / dt))
+
+
+def rrw_sdde_dfun(buf, x, t, p):
+    """RRW corticothalamic model with explicit delay (SDDE form).
+
+    The cortical field phi_e reaches thalamic populations with a delay
+    of t0/2 (half the round-trip).  This is the mechanism that produces
+    alpha-band oscillations at ~1/t0 ≈ 12 Hz.
+
+    Compatible with ``vbjax.make_sdde``.
+
+    Parameters
+    ----------
+    buf : array, shape (buf_len, 8) or (buf_len, 8, n_nodes)
+        History buffer of states.
+    x : array, shape (8,) or (8, n_nodes)
+        Current state [phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r].
+    t : int
+        Current time index into buf.
+    p : tuple (delay_steps, c_ext, node_theta)
+        delay_steps : int, number of steps for t0/2
+        c_ext : external coupling input
+        node_theta : RRWTheta
+
+    Returns
+    -------
+    dx : array, same shape as x
+    """
+    delay_steps, c, theta = p
+
+    phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r = x
+
+    # Delayed cortical field: phi_e at t - delay_steps
+    phi_e_delayed = buf[t - delay_steps, 0]
+
+    # Convert rates to ms^-1
+    ge = theta.gamma_e * 1e-3
+    al = theta.alpha * 1e-3
+    be = theta.beta * 1e-3
+    Q_max_ms = theta.Q_max * 1e-3
+
+    # Sigmoid
+    def S(V):
+        return Q_max_ms / (1.0 + np.exp(-(V - theta.theta) / theta.sigma_prime))
+
+    Q_e = S(V_e)
+    Q_i = S(V_i)
+    Q_s = S(V_s)
+    Q_r = S(V_r)
+
+    # Cortical axonal field
+    ddphi_e = ge**2 * (Q_e - phi_e) - 2.0 * ge * dphi_e
+
+    # Cortical somas (no delay — local)
+    drive_e = theta.nu_ee * phi_e + theta.nu_ei * Q_i + theta.nu_es * Q_s
+    dV_e_dt = (al * be * drive_e - (al + be) * V_e) * 0.5
+
+    drive_i = theta.nu_ee * phi_e + theta.nu_ei * Q_i + theta.nu_es * Q_s
+    dV_i_dt = (al * be * drive_i - (al + be) * V_i) * 0.5
+
+    # Thalamic relay — receives DELAYED cortical field
+    drive_s = (theta.nu_se * phi_e_delayed + theta.nu_sr * Q_r
+               + theta.nu_sn * (theta.I + c))
+    ddV_s = al * be * drive_s - (al + be) * dV_s - al * be * V_s
+
+    # Thalamic reticular — receives DELAYED cortical field
+    drive_r = theta.nu_re * phi_e_delayed + theta.nu_rs * Q_s
+    ddV_r = al * be * drive_r - (al + be) * dV_r - al * be * V_r
+
+    return np.array([
+        dphi_e,
+        ddphi_e,
+        dV_e_dt,
+        dV_i_dt,
+        dV_s,
+        dV_r,
+        ddV_s,
+        ddV_r,
+    ])
+
+
+def make_rrw_sdde(dt=0.5, t0=85.0, gfun=0.1):
+    """Convenience factory for RRW with corticothalamic delay.
+
+    Parameters
+    ----------
+    dt : float
+        Time step (ms).
+    t0 : float
+        Round-trip corticothalamic delay (ms).
+    gfun : float or callable
+        Diffusion coefficient.
+
+    Returns
+    -------
+    step : callable
+    loop : callable
+        ``loop(buf, p)`` where buf shape is ``(nh + n_steps, 8)``
+        and ``p = (delay_steps, c_ext, rrw_theta)``.
+    nh : int
+        History length (max delay in steps).
+    delay_steps : int
+        Steps for t0/2.
+
+    Example
+    -------
+    >>> step, loop, nh, ds = make_rrw_sdde(dt=0.5, t0=85.0)
+    >>> buf = jnp.zeros((nh + 10000, 8))  # history + simulation
+    >>> buf = buf.at[nh:].set(vb.randn(10000, 8) * 0.1)  # noise
+    >>> p = (ds, 0.0, vb.rrw_default_theta)
+    >>> buf, xs = loop(buf, p)
+    """
+    delay_steps = rrw_delay_steps(dt, t0)
+    nh = delay_steps + 1  # need at least delay_steps of history
+
+    from .loops import make_sdde as _make_sdde
+    step, loop = _make_sdde(dt, nh, rrw_sdde_dfun, gfun)
+
+    return step, loop, nh, delay_steps
+
+
+# ====================================================================
+# Liley with inter-regional propagation delays (SDDE form)
+#
+# In the network form, excitatory firing rate from region j arrives at
+# region i after a conduction delay d_ij = length_ij / v_e.
+# The phi_ee and phi_ei long-range inputs become delayed sums.
+#
+# SDDE dfun signature: dfun(buf, x, t, p)
+# ====================================================================
+
+def liley_sdde_dfun(buf, x, t, p):
+    """Liley model with delayed inter-regional coupling (SDDE form).
+
+    For single-node (no network), this reduces to the standard Liley model
+    with c=0.  For network use, the coupling is computed from the delayed
+    buffer and passed via the parameter tuple.
+
+    Compatible with ``vbjax.make_sdde``.
+
+    Parameters
+    ----------
+    buf : array, shape (buf_len, 14) or (buf_len, 14, n_nodes)
+        History buffer.
+    x : array, shape (14,) or (14, n_nodes)
+        Current state.
+    t : int
+        Current time index into buf.
+    p : tuple (delay_coupling, node_theta)
+        delay_coupling : array or scalar
+            Pre-computed delayed coupling input (added to phi_ee).
+            For single-node use, pass 0.0.
+        node_theta : LileyTheta
+
+    Returns
+    -------
+    dx : array, same shape as x
+    """
+    c_delayed, theta = p
+
+    (h_e, h_i,
+     I_ee, I_ei, I_ie, I_ii,
+     dI_ee, dI_ei, dI_ie, dI_ii,
+     phi_ee, phi_ei, dphi_ee, dphi_ei) = x
+
+    ge = theta.gamma_e * 1e-3
+    gi = theta.gamma_i * 1e-3
+
+    S_e = theta.S_e_max / (1.0 + np.exp(-2.0 * (h_e - theta.mu_e) / theta.sigma_e))
+    S_i = theta.S_i_max / (1.0 + np.exp(-2.0 * (h_i - theta.mu_i) / theta.sigma_i))
+
+    psi_ee = (theta.h_ee_eq - h_e) / np.abs(theta.h_ee_eq - theta.h_e_rest)
+    psi_ei = (theta.h_ei_eq - h_i) / np.abs(theta.h_ei_eq - theta.h_i_rest)
+    psi_ie = (theta.h_ie_eq - h_e) / np.abs(theta.h_ie_eq - theta.h_e_rest)
+    psi_ii = (theta.h_ii_eq - h_i) / np.abs(theta.h_ii_eq - theta.h_i_rest)
+
+    dh_e = (1.0 / theta.tau_e) * (theta.h_e_rest - h_e + psi_ee * I_ee + psi_ie * I_ie)
+    dh_i = (1.0 / theta.tau_i) * (theta.h_i_rest - h_i + psi_ei * I_ei + psi_ii * I_ii)
+
+    v_Lambda = theta.v_e * theta.Lambda * 1e-3
+
+    e_const = np.e
+
+    ddI_ee = -2.0 * ge * dI_ee - ge**2 * I_ee + theta.Gamma_e * ge * e_const * (
+        theta.N_ee_b * S_e + phi_ee + c_delayed + theta.p_ee)
+    ddI_ei = -2.0 * ge * dI_ei - ge**2 * I_ei + theta.Gamma_e * ge * e_const * (
+        theta.N_ei_b * S_e + phi_ei + theta.p_ei)
+    ddI_ie = -2.0 * gi * dI_ie - gi**2 * I_ie + theta.Gamma_i * gi * e_const * (
+        theta.N_ie_b * S_i)
+    ddI_ii = -2.0 * gi * dI_ii - gi**2 * I_ii + theta.Gamma_i * gi * e_const * (
+        theta.N_ii_b * S_i)
+
+    ddphi_ee = (-2.0 * v_Lambda * dphi_ee - v_Lambda**2 * phi_ee
+                + v_Lambda**2 * theta.N_ee_a * S_e)
+    ddphi_ei = (-2.0 * v_Lambda * dphi_ei - v_Lambda**2 * phi_ei
+                + v_Lambda**2 * theta.N_ei_a * S_e)
+
+    return np.array([
+        dh_e, dh_i,
+        dI_ee, dI_ei, dI_ie, dI_ii,
+        ddI_ee, ddI_ei, ddI_ie, ddI_ii,
+        dphi_ee, dphi_ei, ddphi_ee, ddphi_ei,
+    ])
+
+
+def liley_sdde_net_dfun(buf, x, t, p):
+    """Network Liley with delayed connectome coupling (SDDE form).
+
+    Each region j's excitatory firing rate S_e arrives at region i
+    after a conduction delay d_ij.  The delay helper pre-computes
+    the delay indices from tract lengths and conduction velocity.
+
+    Compatible with ``vbjax.make_sdde``.
+
+    Parameters
+    ----------
+    buf : array, shape (buf_len, 14, n_nodes)
+        History buffer.
+    x : array, shape (14, n_nodes)
+        Current state.
+    t : int
+        Current time index.
+    p : tuple (delay_helper, G, node_theta)
+        delay_helper : DelayHelper from vbjax.coupling
+        G : float, global coupling gain
+        node_theta : LileyTheta
+
+    Returns
+    -------
+    dx : array, shape (14, n_nodes)
+    """
+    from .coupling import delay_apply
+
+    dh, G, node_theta = p
+
+    # Compute delayed coupling: weighted sum of delayed h_e across regions
+    # h_e is state index 0
+    h_e_delayed = delay_apply(dh, t, buf[:, 0:1, :])  # (1, n_nodes)
+
+    # Firing rate of delayed h_e
+    S_e_delayed = node_theta.S_e_max / (1.0 + np.exp(
+        -2.0 * (h_e_delayed[0] - node_theta.mu_e) / node_theta.sigma_e))
+
+    c_delayed = G * S_e_delayed
+
+    return liley_sdde_dfun(buf, x, t, (c_delayed, node_theta))

@@ -45,6 +45,8 @@ from .neural_mass import (
     liley_pharma_dfun, liley_pharma_net_dfun, liley_adhoc,
     RRWTheta, RRWState, rrw_default_theta, rrw_default_state,
     rrw_dfun, rrw_net_dfun, rrw_observe_phi,
+    rrw_sdde_dfun, rrw_delay_steps, make_rrw_sdde,
+    liley_sdde_dfun, liley_sdde_net_dfun,
         )
 from .regmap import make_region_mapping
 from .coupling import (
