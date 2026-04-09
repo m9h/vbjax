@@ -17,7 +17,13 @@ Usage:
 
 import argparse
 import json
+import os
+import sys
 import time
+
+# Force unbuffered output for Slurm log visibility
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 from pathlib import Path
 
 import jax
@@ -196,14 +202,14 @@ def main():
     if args.quick:
         args.n_subjects = min(args.n_subjects, 10)
         n_opt_steps = 50
-        n_steps = 20_000
+        n_steps = 10_000
     else:
-        n_opt_steps = 200
-        n_steps = 50_000
+        n_opt_steps = 150
+        n_steps = 10_000   # 5s at 2kHz — fast compilation, sufficient spectral resolution
 
     dt_s = 0.5e-3  # 2 kHz
-    n_warmup = n_steps // 5
-    nperseg = 1024
+    n_warmup = 2_000
+    nperseg = 512
 
     print("=" * 60)
     print("vbjax BMS on Hartoyo et al. EEG data")
