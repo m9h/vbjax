@@ -1239,22 +1239,24 @@ RRWTheta = collections.namedtuple(
     ).split())
 
 rrw_default_theta = RRWTheta(
-    Q_max=250.0,      # maximum firing rate (s^-1)
-    theta=15.0,        # sigmoid threshold (mV)
-    sigma_prime=3.3,   # sigmoid width (mV)
-    gamma_e=100.0,     # cortical damping rate (s^-1)
-    alpha=50.0,        # synaptic rise rate (s^-1)
-    beta=200.0,        # synaptic decay rate (s^-1)
-    nu_ee=1.0,         # E→E cortical (mV*ms)
-    nu_ei=-1.8,        # I→E cortical (mV*ms, negative)
-    nu_es=1.0,         # relay→E cortical (mV*ms)
-    nu_se=1.2,         # E→relay (mV*ms)
-    nu_sr=-0.8,        # reticular→relay (mV*ms, negative)
-    nu_sn=1.0,         # external→relay (mV*ms)
-    nu_re=0.4,         # E→reticular (mV*ms)
-    nu_rs=0.2,         # relay→reticular (mV*ms)
+    # NFTsim canonical set (Robinson 2005, PMC1854922)
+    # Produces alpha-band oscillations via corticothalamic delay
+    Q_max=340.0,       # maximum firing rate (s^-1)
+    theta=12.92,       # sigmoid threshold (mV)
+    sigma_prime=3.8,   # sigmoid width (mV)
+    gamma_e=116.0,     # cortical damping rate (s^-1)
+    alpha=83.33,       # synaptic rise rate (s^-1)  [1/alpha = 12 ms]
+    beta=769.23,       # synaptic decay rate (s^-1)  [1/beta = 1.3 ms]
+    nu_ee=1.525,       # E→E cortical (mV*s)
+    nu_ei=-3.023,      # I→E cortical (mV*s, negative)
+    nu_es=0.567,       # relay→E cortical (mV*s)
+    nu_se=3.447,       # E→relay (mV*s)
+    nu_sr=-1.465,      # reticular→relay (mV*s, negative)
+    nu_sn=3.593,       # external→relay (mV*s)
+    nu_re=0.170,       # E→reticular (mV*s)
+    nu_rs=0.051,       # relay→reticular (mV*s)
     t0=85.0,           # round-trip corticothalamic delay (ms)
-    I=0.0,             # external stimulus (kHz)
+    I=1.0,             # external stimulus rate (kHz), tonic thalamic drive
 )
 
 RRWState = collections.namedtuple(
@@ -1263,8 +1265,8 @@ RRWState = collections.namedtuple(
 
 rrw_default_state = RRWState(
     phi_e=5.0, dphi_e=0.0,
-    V_e=0.0, V_i=0.0,
-    V_s=0.0, V_r=0.0,
+    V_e=10.0, V_i=10.0,
+    V_s=10.0, V_r=10.0,
     dV_s=0.0, dV_r=0.0,
 )
 
@@ -1289,22 +1291,27 @@ def rrw_dfun(ys, c, p):
     """
     phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r = ys
 
-    # Convert rates to ms^-1
-    ge = p.gamma_e * 1e-3
-    al = p.alpha * 1e-3
-    be = p.beta * 1e-3
-    Q_max_ms = p.Q_max * 1e-3
+    # All computation in SI (seconds, volts) then convert output to ms^-1.
+    # Parameters: rates in s^-1, gains in V*s, potentials in V.
+    # This avoids unit-conversion errors in the gain*firing_rate products.
 
-    # Sigmoid firing rate function
+    ge = p.gamma_e          # s^-1
+    al = p.alpha            # s^-1
+    be = p.beta             # s^-1
+
+    # Sigmoid: Q in s^-1, V in mV
     def S(V):
-        return Q_max_ms / (1.0 + np.exp(-(V - p.theta) / p.sigma_prime))
+        return p.Q_max / (1.0 + np.exp(-(V - p.theta) / p.sigma_prime))
 
     Q_e = S(V_e)
     Q_i = S(V_i)
     Q_s = S(V_s)
     Q_r = S(V_r)
 
+    # phi_e is in s^-1 (mean firing rate propagated on cortical surface)
+
     # Cortical axonal field (damped, spatially homogeneous)
+    # d²phi/dt² = gamma_e² (Q_e - phi_e) - 2 gamma_e dphi/dt
     ddphi_e = ge**2 * (Q_e - phi_e) - 2.0 * ge * dphi_e
 
     # Approximate delayed cortical output for corticothalamic loop.
@@ -1313,14 +1320,15 @@ def rrw_dfun(ys, c, p):
     phi_e_delayed = phi_e
 
     # Cortical excitatory soma (second-order synaptic filter)
+    # V_e is in mV, nu in mV*s, Q and phi in s^-1 → nu*Q in mV
     drive_e = p.nu_ee * phi_e + p.nu_ei * Q_i + p.nu_es * Q_s
-    dV_e_dt = (al * be * drive_e - (al + be) * V_e) * 0.5
+    dV_e_dt = al * be * drive_e - (al + be) * V_e
 
     # Cortical inhibitory soma (same cortical inputs)
     drive_i = p.nu_ee * phi_e + p.nu_ei * Q_i + p.nu_es * Q_s
-    dV_i_dt = (al * be * drive_i - (al + be) * V_i) * 0.5
+    dV_i_dt = al * be * drive_i - (al + be) * V_i
 
-    # Thalamic relay soma (full 2nd-order filter)
+    # Thalamic relay soma
     drive_s = (p.nu_se * phi_e_delayed + p.nu_sr * Q_r
                + p.nu_sn * (p.I + c))
     ddV_s = al * be * drive_s - (al + be) * dV_s - al * be * V_s
@@ -1329,15 +1337,18 @@ def rrw_dfun(ys, c, p):
     drive_r = p.nu_re * phi_e_delayed + p.nu_rs * Q_s
     ddV_r = al * be * drive_r - (al + be) * dV_r - al * be * V_r
 
+    # Convert derivatives from s^-1 to ms^-1 (multiply by 1e-3)
+    # since integration step dt is in ms
+    ms = 1e-3
     return np.array([
-        dphi_e,
-        ddphi_e,
-        dV_e_dt,
-        dV_i_dt,
-        dV_s,
-        dV_r,
-        ddV_s,
-        ddV_r,
+        dphi_e * ms,
+        ddphi_e * ms,
+        dV_e_dt * ms,
+        dV_i_dt * ms,
+        dV_s * ms,
+        dV_r * ms,
+        ddV_s * ms,
+        ddV_r * ms,
     ])
 
 
@@ -1425,15 +1436,13 @@ def rrw_sdde_dfun(buf, x, t, p):
     # Delayed cortical field: phi_e at t - delay_steps
     phi_e_delayed = buf[t - delay_steps, 0]
 
-    # Convert rates to ms^-1
-    ge = theta.gamma_e * 1e-3
-    al = theta.alpha * 1e-3
-    be = theta.beta * 1e-3
-    Q_max_ms = theta.Q_max * 1e-3
+    # All computation in SI (s^-1) then convert to ms^-1 at the end
+    ge = theta.gamma_e
+    al = theta.alpha
+    be = theta.beta
 
-    # Sigmoid
     def S(V):
-        return Q_max_ms / (1.0 + np.exp(-(V - theta.theta) / theta.sigma_prime))
+        return theta.Q_max / (1.0 + np.exp(-(V - theta.theta) / theta.sigma_prime))
 
     Q_e = S(V_e)
     Q_i = S(V_i)
@@ -1445,10 +1454,10 @@ def rrw_sdde_dfun(buf, x, t, p):
 
     # Cortical somas (no delay — local)
     drive_e = theta.nu_ee * phi_e + theta.nu_ei * Q_i + theta.nu_es * Q_s
-    dV_e_dt = (al * be * drive_e - (al + be) * V_e) * 0.5
+    dV_e_dt = al * be * drive_e - (al + be) * V_e
 
     drive_i = theta.nu_ee * phi_e + theta.nu_ei * Q_i + theta.nu_es * Q_s
-    dV_i_dt = (al * be * drive_i - (al + be) * V_i) * 0.5
+    dV_i_dt = al * be * drive_i - (al + be) * V_i
 
     # Thalamic relay — receives DELAYED cortical field
     drive_s = (theta.nu_se * phi_e_delayed + theta.nu_sr * Q_r
@@ -1459,15 +1468,17 @@ def rrw_sdde_dfun(buf, x, t, p):
     drive_r = theta.nu_re * phi_e_delayed + theta.nu_rs * Q_s
     ddV_r = al * be * drive_r - (al + be) * dV_r - al * be * V_r
 
+    # Convert from s^-1 to ms^-1 for ms-based integration
+    ms = 1e-3
     return np.array([
-        dphi_e,
-        ddphi_e,
-        dV_e_dt,
-        dV_i_dt,
-        dV_s,
-        dV_r,
-        ddV_s,
-        ddV_r,
+        dphi_e * ms,
+        ddphi_e * ms,
+        dV_e_dt * ms,
+        dV_i_dt * ms,
+        dV_s * ms,
+        dV_r * ms,
+        ddV_s * ms,
+        ddV_r * ms,
     ])
 
 
