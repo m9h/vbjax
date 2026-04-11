@@ -1214,15 +1214,25 @@ def cbei_observe_V(ys):
 #
 # Alpha from corticothalamic loop delay (~85 ms round-trip → ~12 Hz).
 #
-# 8 first-order ODEs (spatially homogeneous):
-#   phi_e, dphi_e  - cortical excitatory axonal field + derivative
-#   V_e, V_i       - cortical soma potentials
-#   V_s, V_r       - thalamic soma potentials
-#   dV_s, dV_r     - auxiliary for 2nd-order thalamic synaptic filter
+# 12 first-order ODEs (from 2nd-order dendritic filters + wave eq):
+#   phi_e, dphi_e      - cortical excitatory axonal field
+#   V_e, dV_e          - cortical excitatory soma (2nd-order filter)
+#   V_i, dV_i          - cortical inhibitory soma (2nd-order filter)
+#   V_s, dV_s          - thalamic relay soma (2nd-order filter)
+#   V_r, dV_r          - thalamic reticular soma (2nd-order filter)
+#   (12 total)
+#
+# Each soma potential obeys the dendritic filter (NFTsim form):
+#   dV/dt = W
+#   dW/dt = alpha*beta*(drive - V) - (alpha+beta)*W
+#
+# Steady-state operating point (Bastiaens et al. 2025):
+#   phi_e=3.175, V_e=0.634, V_i≈V_e, V_s=-3.234, V_r=5.676
 #
 # References:
 #   Robinson PA, Rennie CJ, Wright JJ (2002) Prediction of EEG
 #       spectra from neurophysiology. Phys Rev E 65:041924.
+#   Bastiaens et al. (2025) Alpha models. PLoS Comp Biol.
 # ====================================================================
 
 RRWTheta = collections.namedtuple(
@@ -1261,45 +1271,42 @@ rrw_default_theta = RRWTheta(
 
 RRWState = collections.namedtuple(
     typename='RRWState',
-    field_names='phi_e dphi_e V_e V_i V_s V_r dV_s dV_r'.split(' '))
+    field_names='phi_e dphi_e V_e dV_e V_i dV_i V_s dV_s V_r dV_r'.split(' '))
 
 rrw_default_state = RRWState(
-    phi_e=5.0, dphi_e=0.0,
-    V_e=10.0, V_i=10.0,
-    V_s=10.0, V_r=10.0,
-    dV_s=0.0, dV_r=0.0,
+    # Steady-state operating point from Bastiaens et al. (2025)
+    phi_e=3.175, dphi_e=0.0,
+    V_e=0.634, dV_e=0.0,
+    V_i=0.634, dV_i=0.0,
+    V_s=-3.234, dV_s=0.0,
+    V_r=5.676, dV_r=0.0,
 )
 
 
 def rrw_dfun(ys, c, p):
-    """Robinson-Rennie-Wright corticothalamic model (8D).
+    """Robinson-Rennie-Wright corticothalamic model (12D).
 
-    Spatially homogeneous form (no wave equation spatial terms).
+    Proper second-order dendritic filter for ALL populations, matching
+    NFTsim's DendriteDE::rhs().  ODE form (no delay).
 
     Parameters
     ----------
-    ys : array, shape (8,) or (8, n_nodes)
-        State vector [phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r].
+    ys : array, shape (12,) or (12, n_nodes)
+        [phi_e, dphi_e, V_e, dV_e, V_i, dV_i, V_s, dV_s, V_r, dV_r].
     c : array
         External coupling input (enters relay neuron).
     p : RRWTheta
-        Model parameters.
 
     Returns
     -------
     dys : array, same shape as ys
     """
-    phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r = ys
+    phi_e, dphi_e, V_e, dV_e, V_i, dV_i, V_s, dV_s, V_r, dV_r = ys
 
-    # All computation in SI (seconds, volts) then convert output to ms^-1.
-    # Parameters: rates in s^-1, gains in V*s, potentials in V.
-    # This avoids unit-conversion errors in the gain*firing_rate products.
+    ge = p.gamma_e      # s^-1
+    ab = p.alpha * p.beta  # s^-2
+    apb = p.alpha + p.beta  # s^-1
 
-    ge = p.gamma_e          # s^-1
-    al = p.alpha            # s^-1
-    be = p.beta             # s^-1
-
-    # Sigmoid: Q in s^-1, V in mV
     def S(V):
         return p.Q_max / (1.0 + np.exp(-(V - p.theta) / p.sigma_prime))
 
@@ -1308,47 +1315,33 @@ def rrw_dfun(ys, c, p):
     Q_s = S(V_s)
     Q_r = S(V_r)
 
-    # phi_e is in s^-1 (mean firing rate propagated on cortical surface)
-
-    # Cortical axonal field (damped, spatially homogeneous)
-    # d²phi/dt² = gamma_e² (Q_e - phi_e) - 2 gamma_e dphi/dt
+    # Cortical wave equation (spatially homogeneous)
     ddphi_e = ge**2 * (Q_e - phi_e) - 2.0 * ge * dphi_e
 
-    # Approximate delayed cortical output for corticothalamic loop.
-    # In the full model, phi_e(t - t0/2) is used. For the ODE form
-    # without delay line, we use phi_e directly.
+    # ODE: no delay
     phi_e_delayed = phi_e
 
-    # Cortical excitatory soma (second-order synaptic filter)
-    # V_e is in mV, nu in mV*s, Q and phi in s^-1 → nu*Q in mV
+    # NFTsim dendritic filter: dV/dt = W, dW/dt = ab*(drive - V) - apb*W
     drive_e = p.nu_ee * phi_e + p.nu_ei * Q_i + p.nu_es * Q_s
-    dV_e_dt = al * be * drive_e - (al + be) * V_e
+    ddV_e = ab * (drive_e - V_e) - apb * dV_e
 
-    # Cortical inhibitory soma (same cortical inputs)
     drive_i = p.nu_ee * phi_e + p.nu_ei * Q_i + p.nu_es * Q_s
-    dV_i_dt = al * be * drive_i - (al + be) * V_i
+    ddV_i = ab * (drive_i - V_i) - apb * dV_i
 
-    # Thalamic relay soma
-    drive_s = (p.nu_se * phi_e_delayed + p.nu_sr * Q_r
-               + p.nu_sn * (p.I + c))
-    ddV_s = al * be * drive_s - (al + be) * dV_s - al * be * V_s
+    drive_s = p.nu_se * phi_e_delayed + p.nu_sr * Q_r + p.nu_sn * (p.I + c)
+    ddV_s = ab * (drive_s - V_s) - apb * dV_s
 
-    # Thalamic reticular nucleus
     drive_r = p.nu_re * phi_e_delayed + p.nu_rs * Q_s
-    ddV_r = al * be * drive_r - (al + be) * dV_r - al * be * V_r
+    ddV_r = ab * (drive_r - V_r) - apb * dV_r
 
-    # Convert derivatives from s^-1 to ms^-1 (multiply by 1e-3)
-    # since integration step dt is in ms
+    # Convert s^-1 → ms^-1
     ms = 1e-3
     return np.array([
-        dphi_e * ms,
-        ddphi_e * ms,
-        dV_e_dt * ms,
-        dV_i_dt * ms,
-        dV_s * ms,
-        dV_r * ms,
-        ddV_s * ms,
-        ddV_r * ms,
+        dphi_e * ms, ddphi_e * ms,
+        dV_e * ms, ddV_e * ms,
+        dV_i * ms, ddV_i * ms,
+        dV_s * ms, ddV_s * ms,
+        dV_r * ms, ddV_r * ms,
     ])
 
 
@@ -1357,7 +1350,7 @@ def rrw_net_dfun(ys, p):
 
     Parameters
     ----------
-    ys : array, shape (8, n_nodes)
+    ys : array, shape (12, n_nodes)
     p : tuple (SC, G, node_theta)
     """
     SC, G, node_p = p
@@ -1431,15 +1424,14 @@ def rrw_sdde_dfun(buf, x, t, p):
     """
     delay_steps, c, theta = p
 
-    phi_e, dphi_e, V_e, V_i, V_s, V_r, dV_s, dV_r = x
+    phi_e, dphi_e, V_e, dV_e, V_i, dV_i, V_s, dV_s, V_r, dV_r = x
 
     # Delayed cortical field: phi_e at t - delay_steps
     phi_e_delayed = buf[t - delay_steps, 0]
 
-    # All computation in SI (s^-1) then convert to ms^-1 at the end
     ge = theta.gamma_e
-    al = theta.alpha
-    be = theta.beta
+    ab = theta.alpha * theta.beta
+    apb = theta.alpha + theta.beta
 
     def S(V):
         return theta.Q_max / (1.0 + np.exp(-(V - theta.theta) / theta.sigma_prime))
@@ -1449,36 +1441,29 @@ def rrw_sdde_dfun(buf, x, t, p):
     Q_s = S(V_s)
     Q_r = S(V_r)
 
-    # Cortical axonal field
     ddphi_e = ge**2 * (Q_e - phi_e) - 2.0 * ge * dphi_e
 
-    # Cortical somas (no delay — local)
+    # Cortical somas (local — no delay)
     drive_e = theta.nu_ee * phi_e + theta.nu_ei * Q_i + theta.nu_es * Q_s
-    dV_e_dt = al * be * drive_e - (al + be) * V_e
+    ddV_e = ab * (drive_e - V_e) - apb * dV_e
 
     drive_i = theta.nu_ee * phi_e + theta.nu_ei * Q_i + theta.nu_es * Q_s
-    dV_i_dt = al * be * drive_i - (al + be) * V_i
+    ddV_i = ab * (drive_i - V_i) - apb * dV_i
 
-    # Thalamic relay — receives DELAYED cortical field
-    drive_s = (theta.nu_se * phi_e_delayed + theta.nu_sr * Q_r
-               + theta.nu_sn * (theta.I + c))
-    ddV_s = al * be * drive_s - (al + be) * dV_s - al * be * V_s
+    # Thalamic — DELAYED cortical field
+    drive_s = theta.nu_se * phi_e_delayed + theta.nu_sr * Q_r + theta.nu_sn * (theta.I + c)
+    ddV_s = ab * (drive_s - V_s) - apb * dV_s
 
-    # Thalamic reticular — receives DELAYED cortical field
     drive_r = theta.nu_re * phi_e_delayed + theta.nu_rs * Q_s
-    ddV_r = al * be * drive_r - (al + be) * dV_r - al * be * V_r
+    ddV_r = ab * (drive_r - V_r) - apb * dV_r
 
-    # Convert from s^-1 to ms^-1 for ms-based integration
     ms = 1e-3
     return np.array([
-        dphi_e * ms,
-        ddphi_e * ms,
-        dV_e_dt * ms,
-        dV_i_dt * ms,
-        dV_s * ms,
-        dV_r * ms,
-        ddV_s * ms,
-        ddV_r * ms,
+        dphi_e * ms, ddphi_e * ms,
+        dV_e * ms, ddV_e * ms,
+        dV_i * ms, ddV_i * ms,
+        dV_s * ms, ddV_s * ms,
+        dV_r * ms, ddV_r * ms,
     ])
 
 
