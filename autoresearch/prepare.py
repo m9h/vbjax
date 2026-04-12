@@ -173,7 +173,7 @@ def make_model_dfun(model_name: str, free_param_names: list[str]):
     model_map = {
         'liley': (vb.liley_dfun, vb.liley_default_theta, 14),
         'cmc':   (vb.cmc_dfun,   vb.cmc_default_theta,   8),
-        'rrw':   (vb.rrw_dfun,   vb.rrw_default_theta,   8),
+        'rrw':   (vb.rrw_dfun,   vb.rrw_default_theta,   10),
         'cbei':  (vb.cbei_dfun,  vb.cbei_default_theta,   8),
     }
 
