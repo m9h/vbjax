@@ -44,7 +44,7 @@ from vbjax.bms import bms_ffx, bms_rfx
 # The freq grid is 2-19.75 Hz at 0.25 Hz resolution.
 
 def make_liley_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
-                        target_freqs, noise_sigma=0.5e-3):
+                        target_freqs, noise_sigma=0.3e-3):
     """Build Liley forward PSD predictor matched to Hartoyo freq grid."""
     defaults = {name: getattr(vb.liley_default_theta, name) for name in free_params}
 
@@ -67,7 +67,7 @@ def make_liley_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
 
 
 def make_cmc_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
-                      target_freqs, noise_sigma=1e-3):
+                      target_freqs, noise_sigma=0.3e-3):
     defaults = {name: getattr(vb.cmc_default_theta, name) for name in free_params}
 
     def dfun(ys, theta):
@@ -86,7 +86,7 @@ def make_cmc_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
 
 
 def make_rrw_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
-                      target_freqs, noise_sigma=0.1e-3):
+                      target_freqs, noise_sigma=0.3e-3):
     defaults = {name: getattr(vb.rrw_default_theta, name) for name in free_params}
 
     def dfun(ys, theta):
@@ -100,11 +100,11 @@ def make_rrw_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
     sim_freqs = np.fft.rfftfreq(nperseg, d=dt_s)
     target_indices = np.array([np.argmin(np.abs(sim_freqs - tf)) for tf in target_freqs])
 
-    return sde_loop, target_indices, 8
+    return sde_loop, target_indices, 10  # 10-state model (proper 2nd-order filters)
 
 
 def make_cbei_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
-                       target_freqs, noise_sigma=0.01e-3):
+                       target_freqs, noise_sigma=0.3e-3):
     defaults = {name: getattr(vb.cbei_default_theta, name) for name in free_params}
 
     def dfun(ys, theta):
@@ -225,16 +225,17 @@ def main():
     n_freq = len(freqs)
     print(f"Loaded {n_sub} subjects, {n_freq} freq bins ({float(freqs[0]):.1f}-{float(freqs[-1]):.1f} Hz)")
 
-    # Model specs: name, factory, free_params
+    # Model specs: AgentSciML-evolved parameter selection
+    # 5 connectivity-focused free params per model, lr=0.05, noise=0.0003
     model_specs = [
         ('Liley', make_liley_spectral,
-         ['p_ee', 'sigma_e', 'Gamma_e', 'gamma_i']),
+         ['p_ee', 'sigma_e', 'tau_e', 'p_ei', 'tau_i']),
         ('CMC', make_cmc_spectral,
-         ['I', 'g_ss_sp', 'He', 'Hi']),
+         ['I', 'g_ss_sp', 'g_sp_ii', 'g_ii_ss', 'g_ii_sp']),
         ('RRW', make_rrw_spectral,
-         ['I', 'nu_ee', 'nu_es', 'gamma_e']),
+         ['nu_ee', 'nu_ei', 'nu_se', 'nu_re']),
         ('CBEI', make_cbei_spectral,
-         ['I', 'kappa_ee', 'kappa_ie', 'tau_s_e']),
+         ['kappa_ee', 'kappa_ei', 'kappa_ie', 'kappa_ii']),
     ]
 
     conditions = [('eyes_closed', spectra_ec)]
