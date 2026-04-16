@@ -1364,6 +1364,85 @@ def rrw_observe_phi(ys):
     return ys[0]
 
 
+def rrw_transfer_function(freqs_hz, p, phi_n_sq=1.0):
+    """Analytical power spectrum of the RRW corticothalamic model.
+
+    Computes the EEG power spectrum from the linearized transfer function
+    without any time-domain simulation.  This is how Robinson's group
+    actually uses the model (Robinson et al. 2001, 2002).
+
+    Based on the braintrak ``nus_mass`` implementation and Bastiaens
+    et al. (2025).
+
+    Parameters
+    ----------
+    freqs_hz : array, shape (n_freq,)
+        Frequencies in Hz.
+    p : RRWTheta
+        Model parameters.
+    phi_n_sq : float
+        Power of the white noise input (default 1.0).
+
+    Returns
+    -------
+    psd : array, shape (n_freq,)
+        Power spectral density at each frequency.
+    """
+    w = 2.0 * np.pi * freqs_hz  # rad/s
+
+    # Sigmoid slope at the fixed point (same for all populations
+    # in the standard symmetric parameterization)
+    rho = p.Q_max / (4.0 * p.sigma_prime)  # s^-1 / mV
+
+    # Linearized gains: G_ab = rho * nu_ab
+    G_ee = rho * p.nu_ee
+    G_ei = rho * p.nu_ei
+    G_es = rho * p.nu_es
+    G_se = rho * p.nu_se
+    G_sr = rho * p.nu_sr
+    G_sn = rho * p.nu_sn
+    G_re = rho * p.nu_re
+    G_rs = rho * p.nu_rs
+
+    # Composite loop gains
+    G_ese = G_es * G_se
+    G_esre = G_es * G_sr * G_re
+    G_srs = G_sr * G_rs
+
+    # Dendritic filter: L(w) = 1 / ((1 - iw/alpha)(1 - iw/beta))
+    iw = 1j * w
+    L = 1.0 / ((1.0 - iw / p.alpha) * (1.0 - iw / p.beta))
+
+    # Delay factor
+    t0_s = p.t0 * 1e-3  # ms -> s
+    delay = np.exp(iw * t0_s)
+
+    # Denominator: spatially uniform (k=0) transfer function
+    # A(w) = (1 - G_ei*L)(1 - iw/gamma_e)^2
+    #       - G_ee*L*(1 - G_srs*L^2)
+    #       - (G_ese*L^2 + G_esre*L^3) * exp(iw*t0)
+    gamma_factor = (1.0 - iw / p.gamma_e) ** 2
+    A = ((1.0 - G_ei * L) * gamma_factor
+         - G_ee * L * (1.0 - G_srs * L**2)
+         - (G_ese * L**2 + G_esre * L**3) * delay)
+
+    # Numerator: noise enters via thalamic relay
+    # phi_e(w) = G_esn * L^2 * phi_n * exp(iw*t0/2) / A(w)
+    # (the half-delay accounts for noise entering at the thalamus)
+    N = G_sn * L**2 * delay**(0.5)  # exp(iw*t0/2) = delay^0.5
+
+    # Power spectrum
+    T = N / A
+    psd = np.abs(T) ** 2 * phi_n_sq
+
+    return psd
+
+
+def rrw_analytical_psd(freqs_hz, p, phi_n_sq=1.0):
+    """Convenience alias for ``rrw_transfer_function``."""
+    return rrw_transfer_function(freqs_hz, p, phi_n_sq)
+
+
 # ====================================================================
 # RRW with corticothalamic delay (SDDE form)
 #

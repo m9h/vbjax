@@ -121,6 +121,89 @@ def make_cbei_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
     return sde_loop, target_indices, 8
 
 
+def make_jr_spectral(free_params, dt_s, n_steps, n_warmup, nperseg,
+                     target_freqs, noise_sigma=0.3e-3):
+    """Jansen-Rit forward PSD predictor."""
+    defaults = {name: getattr(vb.jr_default_theta, name) for name in free_params}
+
+    def dfun(ys, theta):
+        replacements = {}
+        for i, name in enumerate(free_params):
+            replacements[name] = jnp.exp(theta[i]) * defaults[name]
+        p = vb.jr_default_theta._replace(**replacements)
+        return vb.jr_dfun(ys, 0.0, p)
+
+    _, sde_loop = vb.make_sde(dt_s, dfun, noise_sigma)
+    sim_freqs = np.fft.rfftfreq(nperseg, d=dt_s)
+    target_indices = np.array([np.argmin(np.abs(sim_freqs - tf)) for tf in target_freqs])
+
+    return sde_loop, target_indices, 6
+
+
+def make_rrw_analytical(free_params, target_freqs):
+    """RRW analytical transfer function — no simulation needed.
+
+    Returns a dummy sde_loop=None and target_indices=None.
+    The fitting engine must detect this and use the analytical path.
+    """
+    defaults = {name: getattr(vb.rrw_default_theta, name) for name in free_params}
+    return None, None, 'analytical', free_params, defaults
+
+
+def fit_rrw_analytical(target_psd, target_freqs, free_params, defaults,
+                       k, n_opt_steps=200, lr=0.05, use_bic=False):
+    """Fit RRW analytical transfer function to an observed PSD."""
+    prior_mean = jnp.zeros(k)
+    prior_std = jnp.ones(k) * 1.5
+    target_freqs_np = np.array(target_freqs)
+
+    def predict_psd(theta):
+        replacements = {}
+        for i, name in enumerate(free_params):
+            replacements[name] = jnp.exp(theta[i]) * defaults[name]
+        p = vb.rrw_default_theta._replace(**replacements)
+        psd = vb.rrw_analytical_psd(target_freqs_np, p)
+        return psd
+
+    def neg_log_joint(theta):
+        pred = predict_psd(theta)
+        eps = 1e-10
+        nll = jnp.sum((jnp.log(pred + eps) - jnp.log(target_psd + eps))**2)
+        nlp = 0.5 * jnp.sum(((theta - prior_mean) / prior_std)**2)
+        return nll + nlp
+
+    vg = jax.jit(jax.value_and_grad(neg_log_joint))
+    theta = jnp.zeros(k)
+    m, v = jnp.zeros(k), jnp.zeros(k)
+
+    for step in range(n_opt_steps):
+        loss, grad = vg(theta)
+        grad = jnp.clip(grad, -5.0, 5.0)
+        cur_lr = lr * 0.5 * (1 + np.cos(np.pi * step / n_opt_steps))
+        m = 0.9 * m + 0.1 * grad
+        v = 0.999 * v + 0.001 * grad**2
+        mh = m / (1 - 0.9**(step + 1))
+        vh = v / (1 - 0.999**(step + 1))
+        theta = theta - cur_lr * mh / (jnp.sqrt(vh) + 1e-8)
+
+    final_nlj = float(neg_log_joint(theta))
+
+    if use_bic:
+        n_data = len(target_freqs)
+        F = -final_nlj - 0.5 * k * np.log(n_data)
+    else:
+        try:
+            H = jax.hessian(neg_log_joint)(theta)
+            sign, logdet = jnp.linalg.slogdet(H)
+            F = -final_nlj + 0.5 * k * float(jnp.log(2 * jnp.pi)) - 0.5 * float(logdet)
+            if int(sign) <= 0:
+                F = -1e10
+        except Exception:
+            F = -1e10
+
+    return F, final_nlj, theta
+
+
 # =====================================================================
 # Fitting engine
 # =====================================================================
@@ -226,15 +309,17 @@ def main():
     print(f"Loaded {n_sub} subjects, {n_freq} freq bins ({float(freqs[0]):.1f}-{float(freqs[-1]):.1f} Hz)")
 
     # Model specs: AgentSciML-evolved parameter selection
-    # 5 connectivity-focused free params per model, lr=0.05, noise=0.0003
+    # Connectivity-focused free params, lr=0.05, noise=0.0003
     model_specs = [
-        ('Liley', make_liley_spectral,
+        ('Liley', 'sde', make_liley_spectral,
          ['p_ee', 'sigma_e', 'tau_e', 'p_ei', 'tau_i']),
-        ('CMC', make_cmc_spectral,
+        ('CMC', 'sde', make_cmc_spectral,
          ['I', 'g_ss_sp', 'g_sp_ii', 'g_ii_ss', 'g_ii_sp']),
-        ('RRW', make_rrw_spectral,
+        ('JR', 'sde', make_jr_spectral,
+         ['A', 'B', 'a', 'b', 'mu']),
+        ('RRW_tf', 'analytical', make_rrw_analytical,
          ['nu_ee', 'nu_ei', 'nu_se', 'nu_re']),
-        ('CBEI', make_cbei_spectral,
+        ('CBEI', 'sde', make_cbei_spectral,
          ['kappa_ee', 'kappa_ei', 'kappa_ie', 'kappa_ii']),
     ]
 
@@ -255,36 +340,52 @@ def main():
         free_energies = np.zeros((n_sub, len(model_specs)))
         names = [s[0] for s in model_specs]
 
-        for j, (mname, factory, free_params) in enumerate(model_specs):
+        for j, (mname, mtype, factory, free_params) in enumerate(model_specs):
             k = len(free_params)
-            sde_loop, target_indices, n_states = factory(
-                free_params, dt_s, n_steps, n_warmup, nperseg,
-                np.array(freqs))
-
             t0 = time.perf_counter()
-            print(f"\n  Fitting {mname} ({n_states}D, {k} params: {free_params})...")
 
-            for i in range(n_sub):
-                noise_key = jax.random.PRNGKey(1000 + i)
-                target_psd_i = cond_spectra[i]
+            if mtype == 'analytical':
+                # RRW analytical transfer function — no simulation
+                _, _, _, a_free_params, a_defaults = factory(
+                    free_params, np.array(freqs))
+                print(f"\n  Fitting {mname} (analytical, {k} params: {free_params})...")
 
-                F, loss, theta = fit_to_spectrum(
-                    sde_loop, n_states, target_indices, target_psd_i,
-                    dt_s, n_steps, n_warmup, nperseg, k, noise_key,
-                    n_opt_steps=n_opt_steps, lr=0.05,
-                    use_bic=args.bic)
+                for i in range(n_sub):
+                    target_psd_i = cond_spectra[i]
+                    F, loss, theta = fit_rrw_analytical(
+                        target_psd_i, np.array(freqs),
+                        a_free_params, a_defaults, k,
+                        n_opt_steps=n_opt_steps, lr=0.05,
+                        use_bic=args.bic)
+                    free_energies[i, j] = F
+                    if i < 3:
+                        print(f"    s{i}: F={F:.2f}, loss={loss:.2f}, "
+                              f"theta={[round(float(t), 3) for t in theta]}")
+            else:
+                # SDE simulation-based fitting
+                sde_loop, target_indices, n_states = factory(
+                    free_params, dt_s, n_steps, n_warmup, nperseg,
+                    np.array(freqs))
+                print(f"\n  Fitting {mname} ({n_states}D, {k} params: {free_params})...")
 
-                free_energies[i, j] = F
-
-                if i < 3:
-                    print(f"    s{i}: F={F:.2f}, loss={loss:.2f}, "
-                          f"theta={[round(float(t), 3) for t in theta]}")
+                for i in range(n_sub):
+                    noise_key = jax.random.PRNGKey(1000 + i)
+                    target_psd_i = cond_spectra[i]
+                    F, loss, theta = fit_to_spectrum(
+                        sde_loop, n_states, target_indices, target_psd_i,
+                        dt_s, n_steps, n_warmup, nperseg, k, noise_key,
+                        n_opt_steps=n_opt_steps, lr=0.05,
+                        use_bic=args.bic)
+                    free_energies[i, j] = F
+                    if i < 3:
+                        print(f"    s{i}: F={F:.2f}, loss={loss:.2f}, "
+                              f"theta={[round(float(t), 3) for t in theta]}")
 
             dt_m = time.perf_counter() - t0
             mean_F = free_energies[:, j].mean()
             valid = (free_energies[:, j] > -1e9).sum()
             print(f"    {n_sub} subjects in {dt_m:.1f}s ({dt_m/60:.1f} min), "
-                  f"mean F={mean_F:.2f}, valid Hessians: {valid}/{n_sub}")
+                  f"mean F={mean_F:.2f}, valid: {valid}/{n_sub}")
 
         # BMS
         print(f"\n{'─'*60}")
