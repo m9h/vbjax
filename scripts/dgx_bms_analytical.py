@@ -22,6 +22,7 @@ sys.stderr.reconfigure(line_buffering=True)
 
 import os
 os.environ.setdefault('TMPDIR', '/data/mhough/tmp')
+# Don't set XLA_FLAGS here — let vbjax.__init__ handle it
 
 import vbjax as vb
 from vbjax.transfer import (jr_analytical_psd, cmc_analytical_psd,

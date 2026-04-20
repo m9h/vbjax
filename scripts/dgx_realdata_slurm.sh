@@ -11,7 +11,6 @@
 set -euo pipefail
 
 export TMPDIR=/data/mhough/tmp
-export XLA_FLAGS="--xla_gpu_deterministic_ops=false"
 
 cd ~/dev/vbjax
 source .venv/bin/activate
