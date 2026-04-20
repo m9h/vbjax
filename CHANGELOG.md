@@ -7,6 +7,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Analytical transfer functions** (`vbjax/transfer.py`) -- linearized
+  spectral analysis for all models without time-domain simulation.
+  - Generic `linearized_transfer_function()`: Jacobian-based T(ω) = C(iωI-J)⁻¹B
+  - `jr_analytical_psd`, `cmc_analytical_psd`, `liley_analytical_psd`,
+    `cbei_analytical_psd` -- model-specific wrappers
+  - `rrw_transfer_function` / `rrw_analytical_psd` -- purpose-built
+    Robinson corticothalamic transfer function with explicit delay terms
+    (based on braintrak/NFTsim implementation)
+- **Bayesian model selection** (`vbjax/bms.py`) -- SPM-style BMS:
+  - Laplace free energy via `jax.hessian`
+  - BIC approximation for tractable model comparison
+  - Fixed-effects and random-effects BMS (Stephan et al. 2009)
+  - Exceedance and protected exceedance probabilities (Rigoux et al. 2014)
+- **Spectral fitting pipeline** (`vbjax/spectral.py`) -- differentiable
+  Welch PSD, model inversion, MAP estimation via Adam
+- **Hartoyo EEG data loader** (`vbjax/hartoyo.py`) -- 82-subject resting
+  and alpha-blocking spectra from Hartoyo et al. (2019, 2020)
+- **RRW SDDE** -- corticothalamic model with explicit delay via `make_sdde`:
+  - `rrw_sdde_dfun`, `make_rrw_sdde`, `rrw_delay_steps`
+  - 10-state model with proper second-order NFTsim dendritic filters
+  - NFTsim canonical parameters (Robinson 2005, Bastiaens et al. 2025)
+- **Liley SDDE** -- network form with delayed inter-regional coupling:
+  - `liley_sdde_dfun`, `liley_sdde_net_dfun`
+- **Liley adhoc** -- membrane potential clamping for numerical stability
+- **AgentSciML adapter** -- evolutionary optimization of fitting strategies
+- **DGX Spark scripts** -- Slurm job submission for GPU cluster runs
 - **Liley mean-field cortical model** (Liley, Cadusch & Dafilis 2002) --
   14 state variables with conductance-based (shunting) synapses, alpha-function
   PSP kernels, and damped-wave long-range axonal propagation.
