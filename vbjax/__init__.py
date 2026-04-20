@@ -62,6 +62,11 @@ from .diagnostics import shrinkage_zscore
 from .embed import embed_neural_flow, embed_polynomial, embed_gradient, embed_autoregress
 from .util import to_jax, to_np, tuple_meshgrid, tuple_ravel, tuple_shard
 from .signal import hilbert
+from .transfer import (
+    linearized_transfer_function, find_fixed_point,
+    jr_analytical_psd, cmc_analytical_psd,
+    liley_analytical_psd, cbei_analytical_psd,
+)
 from ._version import __version__
 
 # some random setup for convenience
